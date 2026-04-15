@@ -60,6 +60,50 @@ button:hover {
   backdrop-filter: blur(8px);
 }
 
+.offset-panel {
+  width: min(280px, calc(100vw - 32px));
+  padding: 10px 12px 12px;
+  border-radius: 14px;
+  color: #ffffff;
+  background: rgba(24, 24, 24, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.offset-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.offset-header button {
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
+.offset-value {
+  margin: 10px 0 8px;
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.84);
+}
+
+.offset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  justify-content: center;
+  gap: 8px;
+}
+
+.offset-grid button {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 12px;
+  font-size: 1rem;
+}
+
 @media (max-width: 720px) {
   .map-ui {
     top: 12px;
@@ -73,7 +117,8 @@ button:hover {
   }
 
   button,
-  .status {
+  .status,
+  .offset-panel {
     width: 100%;
   }
 }

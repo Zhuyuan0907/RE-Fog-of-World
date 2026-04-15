@@ -95,7 +95,9 @@ Current code status
 - A persistent global placement offset now exists at block granularity:
   - localStorage key: fog-of-world-web-sync-offset
   - debug API: fogDebug.getSyncPlacementOffset() / fogDebug.setSyncPlacementOffset(blockX, blockY)
-  - current default guess: blockX = -56, blockY = 0
+  - there is now also an in-page calibration panel with arrow buttons
+  - current default guess: blockX = 24, blockY = -8
+  - legacy saved offset (-56, 0) is auto-migrated to the new default
 - This is meant to correct the remaining "shape looks right but center is off" problem without changing the page-tree decode itself.
 - This is still heuristic, but it is materially more consistent with the Taiwan-only clue than the old continent model.
 

@@ -24,6 +24,24 @@
         <button id="syncBtn" type="button">匯入 Sync</button>
         <button id="clearBtn" type="button">清除紀錄</button>
       </div>
+      <div class="offset-panel" aria-label="Sync 位置校正">
+        <div class="offset-header">
+          <span>Sync 校正</span>
+          <button id="offsetResetBtn" type="button">重設</button>
+        </div>
+        <p id="offsetValue" class="offset-value">blockX 0 / blockY 0</p>
+        <div class="offset-grid">
+          <span></span>
+          <button id="offsetNorthBtn" type="button" aria-label="往北微調">↑</button>
+          <span></span>
+          <button id="offsetWestBtn" type="button" aria-label="往西微調">←</button>
+          <button id="offsetCenterBtn" type="button" aria-label="回到預設校正">●</button>
+          <button id="offsetEastBtn" type="button" aria-label="往東微調">→</button>
+          <span></span>
+          <button id="offsetSouthBtn" type="button" aria-label="往南微調">↓</button>
+          <span></span>
+        </div>
+      </div>
       <p id="status" class="status">地圖初始化中...</p>
     </div>
     <input id="fileInput" type="file" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" hidden />

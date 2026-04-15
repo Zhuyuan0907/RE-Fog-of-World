@@ -37,9 +37,14 @@ const TAIWAN_SYNC_ANCHOR = {
   documentY: 219,
 };
 const DEFAULT_SYNC_PLACEMENT_OFFSET = {
+  blockX: 24,
+  blockY: -8,
+};
+const LEGACY_SYNC_PLACEMENT_OFFSET = {
   blockX: -56,
   blockY: 0,
 };
+const SYNC_OFFSET_STEP = 8;
 
 const statusEl = document.querySelector("#status");
 const locateBtn = document.querySelector("#locateBtn");
@@ -49,6 +54,13 @@ const syncBtn = document.querySelector("#syncBtn");
 const clearBtn = document.querySelector("#clearBtn");
 const fileInput = document.querySelector("#fileInput");
 const syncInput = document.querySelector("#syncInput");
+const offsetValueEl = document.querySelector("#offsetValue");
+const offsetNorthBtn = document.querySelector("#offsetNorthBtn");
+const offsetSouthBtn = document.querySelector("#offsetSouthBtn");
+const offsetWestBtn = document.querySelector("#offsetWestBtn");
+const offsetEastBtn = document.querySelector("#offsetEastBtn");
+const offsetCenterBtn = document.querySelector("#offsetCenterBtn");
+const offsetResetBtn = document.querySelector("#offsetResetBtn");
 
 let map;
 let routeLayer;
@@ -79,6 +91,7 @@ function initializeApp() {
   bindEvents();
   redrawRoutesAndFog();
   updateTrackButton();
+  updateOffsetDisplay();
   setStatus("Fog of World 風格迷霧已啟用。可追蹤即時移動、匯入 GPX/KML，或實驗性匯入 Sync。");
 }
 
@@ -143,6 +156,15 @@ function bindEvents() {
 
     setStatus("已清除網頁版紀錄與本次 Sync 匯入結果。");
   });
+
+  offsetNorthBtn?.addEventListener("click", () => nudgeSyncPlacementOffset(0, -SYNC_OFFSET_STEP));
+  offsetSouthBtn?.addEventListener("click", () => nudgeSyncPlacementOffset(0, SYNC_OFFSET_STEP));
+  offsetWestBtn?.addEventListener("click", () => nudgeSyncPlacementOffset(-SYNC_OFFSET_STEP, 0));
+  offsetEastBtn?.addEventListener("click", () => nudgeSyncPlacementOffset(SYNC_OFFSET_STEP, 0));
+  offsetCenterBtn?.addEventListener("click", () =>
+    setSyncPlacementOffset(DEFAULT_SYNC_PLACEMENT_OFFSET.blockX, DEFAULT_SYNC_PLACEMENT_OFFSET.blockY),
+  );
+  offsetResetBtn?.addEventListener("click", () => setSyncPlacementOffset(0, 0));
 
   fileInput.addEventListener("change", async (event) => {
     const [file] = event.target.files ?? [];
@@ -364,7 +386,7 @@ if (!window.L) {
 }
 
 function disableControls() {
-  for (const element of [locateBtn, trackBtn, importBtn, syncBtn, clearBtn]) {
+  for (const element of [locateBtn, trackBtn, importBtn, syncBtn, clearBtn, offsetNorthBtn, offsetSouthBtn, offsetWestBtn, offsetEastBtn, offsetCenterBtn, offsetResetBtn]) {
     if (element) {
       element.disabled = true;
     }
@@ -558,6 +580,12 @@ function updateTrackButton() {
 function setStatus(message) {
   if (statusEl) {
     statusEl.textContent = message;
+  }
+}
+
+function updateOffsetDisplay() {
+  if (offsetValueEl) {
+    offsetValueEl.textContent = `blockX ${syncPlacementOffset.blockX} / blockY ${syncPlacementOffset.blockY}`;
   }
 }
 
@@ -1168,10 +1196,16 @@ function loadSyncPlacementOffset() {
     }
 
     const parsed = JSON.parse(raw);
-    return {
+    const value = {
       blockX: Number.isFinite(parsed?.blockX) ? Math.trunc(parsed.blockX) : DEFAULT_SYNC_PLACEMENT_OFFSET.blockX,
       blockY: Number.isFinite(parsed?.blockY) ? Math.trunc(parsed.blockY) : DEFAULT_SYNC_PLACEMENT_OFFSET.blockY,
     };
+
+    if (value.blockX === LEGACY_SYNC_PLACEMENT_OFFSET.blockX && value.blockY === LEGACY_SYNC_PLACEMENT_OFFSET.blockY) {
+      return { ...DEFAULT_SYNC_PLACEMENT_OFFSET };
+    }
+
+    return value;
   } catch {
     return { ...DEFAULT_SYNC_PLACEMENT_OFFSET };
   }
@@ -1198,7 +1232,29 @@ function refreshSyncOverlayBounds() {
   }
 
   redrawRoutesAndFog();
+  updateOffsetDisplay();
   return bounds;
+}
+
+function fitMapToBounds(bounds) {
+  if (!bounds || !map) {
+    return;
+  }
+
+  map.fitBounds(
+    [
+      [bounds.south, bounds.west],
+      [bounds.north, bounds.east],
+    ],
+    { padding: [24, 24], maxZoom: 9 },
+  );
+}
+
+function nudgeSyncPlacementOffset(deltaBlockX, deltaBlockY) {
+  setSyncPlacementOffset(
+    syncPlacementOffset.blockX + deltaBlockX,
+    syncPlacementOffset.blockY + deltaBlockY,
+  );
 }
 
 function parseGpx(text) {
@@ -1369,17 +1425,9 @@ window.fogDebug = {
       blockY: Math.trunc(blockY),
     };
     persistSyncPlacementOffset();
+    updateOffsetDisplay();
     const bounds = refreshSyncOverlayBounds();
-
-    if (bounds && map) {
-      map.fitBounds(
-        [
-          [bounds.south, bounds.west],
-          [bounds.north, bounds.east],
-        ],
-        { padding: [24, 24], maxZoom: 9 },
-      );
-    }
+    fitMapToBounds(bounds);
 
     return { ...syncPlacementOffset };
   },
