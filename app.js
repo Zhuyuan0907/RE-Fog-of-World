@@ -51,7 +51,7 @@ let fogLayer;
 let marker;
 let watchId = null;
 let liveRoute = null;
-let syncWorldMask = null;
+let syncOverlayMask = null;
 
 const state = loadState();
 
@@ -126,7 +126,7 @@ function bindEvents() {
   clearBtn.addEventListener("click", () => {
     state.routes = [];
     liveRoute = null;
-    syncWorldMask = null;
+    syncOverlayMask = null;
     persistState();
     redrawRoutesAndFog();
 
@@ -176,7 +176,7 @@ function bindEvents() {
     try {
       setStatus(`正在分析 ${files.length} 個 Sync 檔案...`);
       const result = await importSyncDirectory(files);
-      syncWorldMask = result.canvas;
+      syncOverlayMask = result.overlay;
       redrawRoutesAndFog();
 
       if (result.summary.bounds) {
@@ -291,6 +291,11 @@ if (window.L) {
 
     _drawSyncMask(ctx) {
       const source = this.syncMask;
+      if (source?.documents) {
+        this._drawSyncDocuments(ctx, source.documents);
+        return;
+      }
+
       const rowLatitudeSpan = (WORLD_MASK_NORTH - WORLD_MASK_SOUTH) / source.height;
       const left = this._map.latLngToContainerPoint([0, -180]).x;
       const right = this._map.latLngToContainerPoint([0, 180]).x;
@@ -313,6 +318,26 @@ if (window.L) {
         }
 
         ctx.drawImage(source, 0, row, source.width, 1, left, top, drawWidth, drawHeight);
+      }
+    },
+
+    _drawSyncDocuments(ctx, documents) {
+      for (const document of documents) {
+        const northWest = this._map.latLngToContainerPoint([document.bounds.north, document.bounds.west]);
+        const southEast = this._map.latLngToContainerPoint([document.bounds.south, document.bounds.east]);
+        const left = Math.min(northWest.x, southEast.x);
+        const top = Math.min(northWest.y, southEast.y);
+        const drawWidth = Math.abs(southEast.x - northWest.x);
+        const drawHeight = Math.abs(southEast.y - northWest.y);
+
+        if (!Number.isFinite(left) || !Number.isFinite(top) || drawWidth <= 0 || drawHeight <= 0) {
+          continue;
+        }
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(document.canvas, left, top, drawWidth, drawHeight);
+        ctx.restore();
       }
     },
 
@@ -455,7 +480,7 @@ function redrawRoutesAndFog() {
     reveals.push(...buildRevealSamples(route.points, resolveRouteRadius(route)));
   }
 
-  fogLayer.setSyncMask(syncWorldMask);
+  fogLayer.setSyncMask(syncOverlayMask);
   fogLayer.setReveals(reveals);
 }
 
@@ -595,19 +620,11 @@ async function importSyncDirectory(files) {
   const relativeLayout = inferRelativeSyncLayout(parsedDocuments);
   const placedDocuments = assignSyncDocumentsToGrid(relativeLayout, TAIWAN_SYNC_ANCHOR);
 
-  const canvas = document.createElement("canvas");
-  canvas.width = WORLD_MASK_WIDTH;
-  canvas.height = WORLD_MASK_HEIGHT;
-  const ctx = canvas.getContext("2d");
-
-  if (!ctx) {
-    throw new Error("無法建立遮罩畫布。");
-  }
-
   const summary = {
     documents: [],
     bounds: null,
   };
+  const overlayDocuments = [];
 
   let combinedBounds = null;
 
@@ -615,8 +632,13 @@ async function importSyncDirectory(files) {
     const bounds = fogDocumentToBounds(file.documentX, file.documentY);
     const packedBitmap = renderSyncDocumentMask(file.decoded);
 
-    drawSyncDocumentToWorldMask(ctx, packedBitmap, bounds);
     combinedBounds = extendBounds(combinedBounds, bounds);
+    overlayDocuments.push({
+      canvas: packedBitmap.canvas,
+      bounds,
+      filename: file.name,
+      documentGrid: { x: file.documentX, y: file.documentY },
+    });
 
     summary.documents.push({
       label: `${file.name} -> doc(${file.documentX},${file.documentY})`,
@@ -634,7 +656,12 @@ async function importSyncDirectory(files) {
   }
 
   summary.bounds = combinedBounds;
-  return { canvas, summary };
+  return {
+    overlay: {
+      documents: overlayDocuments,
+    },
+    summary,
+  };
 }
 
 async function inflateZlib(bytes) {

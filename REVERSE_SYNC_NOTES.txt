@@ -91,6 +91,7 @@ Current code status
   - infer a relative local layout from directional edge overlap
   - anchor that local layout near Taiwan docs around (426,219)
   - render each document using real Fog document bounds
+  - draw each document directly onto the Leaflet overlay instead of first flattening into a low-res world canvas
 - This is still heuristic, but it is materially more consistent with the Taiwan-only clue than the old continent model.
 
 Observed Sync file stats
