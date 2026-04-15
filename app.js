@@ -16,6 +16,18 @@ const WORLD_MASK_WIDTH = 2048;
 const WORLD_MASK_HEIGHT = 1024;
 const WORLD_MASK_NORTH = 85;
 const WORLD_MASK_SOUTH = -85;
+const FOG_WORLD_PIXEL_ZOOM = 20;
+const FOG_CELL_DIVISOR = 64;
+const FOG_DOCUMENT_SIZE_CELLS = 8192;
+const FOG_BLOCK_SIZE_CELLS = 64;
+const FOG_BLOCKS_PER_DOCUMENT = 128;
+const FOG_DOCUMENTS_PER_ROW = 512;
+const SYNC_PAGE_SIZE_BYTES = 256;
+const SYNC_ROOT_PAGE_COUNT = 128;
+const SYNC_ROOT_GRID_SIZE = 128;
+const SYNC_LEAF_PAGES_PER_BLOCK = 2;
+const SYNC_BLOCK_SIZE_BITS = 64;
+const SYNC_HALF_BLOCK_ROWS = 32;
 
 const SYNC_CONTINENT_ORDER = ["W", "AS", "AF", "NA", "SA", "AN", "EU", "OC"];
 const SYNC_CONTINENT_CONFIG = {
@@ -181,7 +193,9 @@ function bindEvents() {
       );
 
       const labels = result.summary.documents.map((item) => item.label).join("、");
-      setStatus(`已實驗性還原 Sync：${labels}。此結果是依 APK 結構與 continent 尺寸推測，不是原生資料庫 1:1 解碼。`);
+      const ignored = result.summary.ignoredDocuments.map((item) => item.filename).join("、");
+      const ignoredText = ignored ? ` 略過：${ignored}。` : "";
+      setStatus(`已用 root/leaf page tree 還原 Sync：${labels}。${ignoredText} 目前 continent 對應仍是推測，不是原生資料庫 1:1 解碼。`);
     } catch (error) {
       setStatus(`Sync 匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
     } finally {
@@ -572,15 +586,20 @@ async function importSyncDirectory(files) {
     throw new Error("可解壓的 Sync 檔案不足。預期至少 9 個 zlib 檔案。");
   }
 
-  decodedFiles.sort((left, right) => left.bytes.length - right.bytes.length);
-  const statisticDocument = decodedFiles.shift();
-  const explorationDocuments = decodedFiles
-    .slice(0, SYNC_CONTINENT_ORDER.length)
-    .sort((left, right) => right.bytes.length - left.bytes.length);
+  const parsedDocuments = decodedFiles
+    .map((file) => ({
+      ...file,
+      decoded: decodeSyncPageTree(file.bytes),
+    }))
+    .filter((file) => file.decoded.refCount > 0)
+    .sort((left, right) => right.decoded.refCount - left.decoded.refCount);
 
-  if (explorationDocuments.length !== SYNC_CONTINENT_ORDER.length) {
+  if (parsedDocuments.length < SYNC_CONTINENT_ORDER.length) {
     throw new Error("目前只支援 8 份 exploration documents 的 Sync 目錄。");
   }
+
+  const explorationDocuments = parsedDocuments.slice(0, SYNC_CONTINENT_ORDER.length);
+  const ignoredDocuments = parsedDocuments.slice(SYNC_CONTINENT_ORDER.length);
 
   const canvas = document.createElement("canvas");
   canvas.width = WORLD_MASK_WIDTH;
@@ -592,7 +611,11 @@ async function importSyncDirectory(files) {
   }
 
   const summary = {
-    statisticDocument: statisticDocument?.name ?? "unknown",
+    ignoredDocuments: ignoredDocuments.map((file) => ({
+      filename: file.name,
+      refs: file.decoded.refCount,
+      bytes: file.bytes.length,
+    })),
     documents: [],
   };
 
@@ -600,18 +623,20 @@ async function importSyncDirectory(files) {
     const code = SYNC_CONTINENT_ORDER[index];
     const config = SYNC_CONTINENT_CONFIG[code];
     const file = explorationDocuments[index];
-    const packedBitmap = decodePackedSyncBitmap(file.bytes, config.bounds);
+    const packedBitmap = renderSyncDocumentMask(file.decoded, config.bounds);
 
-    drawPackedBitmapToWorldMask(ctx, packedBitmap, config.bounds);
+    drawSyncDocumentToWorldMask(ctx, packedBitmap, config.bounds);
 
     summary.documents.push({
       code,
       label: config.label,
       filename: file.name,
       bytes: file.bytes.length,
-      width: packedBitmap.width,
-      height: packedBitmap.height,
-      remainder: packedBitmap.remainder,
+      refs: file.decoded.refCount,
+      occupiedBlocks: file.decoded.occupiedBlocks,
+      blockBounds: file.decoded.blockBounds,
+      remainder: file.decoded.remainderBytes,
+      trailingPages: file.decoded.trailingPages,
     });
   }
 
@@ -632,47 +657,119 @@ async function inflateZlib(bytes) {
   throw new Error("瀏覽器不支援 zlib 解壓，且 pako 未載入。");
 }
 
-function decodePackedSyncBitmap(bytes, bounds) {
-  const totalBytes = bytes.length;
-  const aspect = estimateBoundsAspect(bounds);
-  const best = estimateBitmapDimensions(totalBytes, aspect);
+function decodeSyncPageTree(bytes) {
+  const fullPageCount = Math.floor(bytes.length / SYNC_PAGE_SIZE_BYTES);
+  if (fullPageCount < SYNC_ROOT_PAGE_COUNT) {
+    throw new Error("Sync 檔案頁數不足，無法解析 root index。");
+  }
+
+  const rootBytes = bytes.subarray(0, SYNC_ROOT_PAGE_COUNT * SYNC_PAGE_SIZE_BYTES);
+  const rootIndex = new Uint16Array(SYNC_ROOT_GRID_SIZE * SYNC_ROOT_GRID_SIZE);
+  const references = new Set();
+  const blockBounds = {
+    minX: SYNC_ROOT_GRID_SIZE - 1,
+    minY: SYNC_ROOT_GRID_SIZE - 1,
+    maxX: 0,
+    maxY: 0,
+  };
+
+  for (let valueIndex = 0; valueIndex < rootIndex.length; valueIndex += 1) {
+    const byteOffset = valueIndex * 2;
+    const reference = rootBytes[byteOffset] | (rootBytes[byteOffset + 1] << 8);
+    rootIndex[valueIndex] = reference;
+
+    if (reference === 0) {
+      continue;
+    }
+
+    references.add(reference);
+    const blockX = valueIndex % SYNC_ROOT_GRID_SIZE;
+    const blockY = Math.floor(valueIndex / SYNC_ROOT_GRID_SIZE);
+    blockBounds.minX = Math.min(blockBounds.minX, blockX);
+    blockBounds.minY = Math.min(blockBounds.minY, blockY);
+    blockBounds.maxX = Math.max(blockBounds.maxX, blockX);
+    blockBounds.maxY = Math.max(blockBounds.maxY, blockY);
+  }
+
+  const refCount = references.size;
+  const occupiedBlocks = rootIndex.reduce((count, reference) => count + (reference > 0 ? 1 : 0), 0);
+  const payloadPages = refCount * SYNC_LEAF_PAGES_PER_BLOCK;
+  const trailingPages = Math.max(0, fullPageCount - SYNC_ROOT_PAGE_COUNT - payloadPages);
+
+  return {
+    rootIndex,
+    refCount,
+    occupiedBlocks,
+    blockBounds: refCount === 0 ? null : blockBounds,
+    trailingPages,
+    remainderBytes: bytes.length - fullPageCount * SYNC_PAGE_SIZE_BYTES,
+    pageBytes: bytes.subarray(0, fullPageCount * SYNC_PAGE_SIZE_BYTES),
+  };
+}
+
+function renderSyncDocumentMask(decodedDocument, bounds) {
+  const width = Math.max(64, Math.round((Math.abs(bounds.east - bounds.west) / 360) * WORLD_MASK_WIDTH * 4));
+  const height = Math.max(64, Math.round((Math.abs(bounds.north - bounds.south) / (WORLD_MASK_NORTH - WORLD_MASK_SOUTH)) * WORLD_MASK_HEIGHT * 4));
   const sourceCanvas = document.createElement("canvas");
-  sourceCanvas.width = best.width;
-  sourceCanvas.height = best.height;
+  sourceCanvas.width = width;
+  sourceCanvas.height = height;
   const sourceCtx = sourceCanvas.getContext("2d");
 
   if (!sourceCtx) {
     throw new Error("無法建立中繼畫布。");
   }
 
-  const imageData = sourceCtx.createImageData(best.width, best.height);
+  const imageData = sourceCtx.createImageData(width, height);
   const pixelData = imageData.data;
-  const usableBytes = best.rowBytes * best.height;
+  const fullSourceSize = SYNC_ROOT_GRID_SIZE * SYNC_BLOCK_SIZE_BITS;
 
-  for (let offset = 0; offset < usableBytes; offset += 1) {
-    const value = bytes[offset];
-    if (value === 0) {
+  for (let blockIndex = 0; blockIndex < decodedDocument.rootIndex.length; blockIndex += 1) {
+    const reference = decodedDocument.rootIndex[blockIndex];
+    if (reference === 0) {
       continue;
     }
 
-    const y = Math.floor(offset / best.rowBytes);
-    const xByte = offset % best.rowBytes;
+    const pageIndex = SYNC_ROOT_PAGE_COUNT + (reference - 1) * SYNC_LEAF_PAGES_PER_BLOCK;
+    const topPage = readSyncPage(decodedDocument.pageBytes, pageIndex);
+    const bottomPage = readSyncPage(decodedDocument.pageBytes, pageIndex + 1);
+    const blockX = blockIndex % SYNC_ROOT_GRID_SIZE;
+    const blockY = Math.floor(blockIndex / SYNC_ROOT_GRID_SIZE);
 
-    for (let bit = 0; bit < 8; bit += 1) {
-      if ((value & (0x80 >> bit)) === 0) {
+    for (const [pageBytes, rowOffset] of [
+      [topPage, 0],
+      [bottomPage, SYNC_HALF_BLOCK_ROWS],
+    ]) {
+      if (!pageBytes) {
         continue;
       }
 
-      const x = xByte * 8 + bit;
-      if (x >= best.width) {
-        continue;
-      }
+      for (let row = 0; row < SYNC_HALF_BLOCK_ROWS; row += 1) {
+        const rowByteOffset = row * 8;
 
-      const pixelIndex = (y * best.width + x) * 4;
-      pixelData[pixelIndex] = 255;
-      pixelData[pixelIndex + 1] = 255;
-      pixelData[pixelIndex + 2] = 255;
-      pixelData[pixelIndex + 3] = 255;
+        for (let byteIndex = 0; byteIndex < 8; byteIndex += 1) {
+          const value = pageBytes[rowByteOffset + byteIndex];
+          if (value === 0) {
+            continue;
+          }
+
+          for (let bit = 0; bit < 8; bit += 1) {
+            if ((value & (0x80 >> bit)) === 0) {
+              continue;
+            }
+
+            const cellX = blockX * SYNC_BLOCK_SIZE_BITS + byteIndex * 8 + bit;
+            const cellY = blockY * SYNC_BLOCK_SIZE_BITS + rowOffset + row;
+            const targetX = Math.min(width - 1, Math.floor((cellX / fullSourceSize) * width));
+            const targetY = Math.min(height - 1, Math.floor((cellY / fullSourceSize) * height));
+            const pixelIndex = (targetY * width + targetX) * 4;
+
+            pixelData[pixelIndex] = 255;
+            pixelData[pixelIndex + 1] = 255;
+            pixelData[pixelIndex + 2] = 255;
+            pixelData[pixelIndex + 3] = 255;
+          }
+        }
+      }
     }
   }
 
@@ -680,48 +777,74 @@ function decodePackedSyncBitmap(bytes, bounds) {
 
   return {
     canvas: sourceCanvas,
-    width: best.width,
-    height: best.height,
-    remainder: best.remainder,
+    width,
+    height,
   };
 }
 
-function estimateBitmapDimensions(totalBytes, aspect) {
-  const targetRowBytes = Math.max(1, Math.round(Math.sqrt((aspect * totalBytes) / 8)));
-  let best = null;
-
-  for (let rowBytes = Math.max(1, targetRowBytes - 256); rowBytes <= targetRowBytes + 256; rowBytes += 1) {
-    const height = Math.floor(totalBytes / rowBytes);
-    if (height <= 0) {
-      continue;
-    }
-
-    const remainder = totalBytes - rowBytes * height;
-    const width = rowBytes * 8;
-    const actualAspect = width / height;
-    const score = Math.abs(actualAspect - aspect) + remainder * 0.03;
-
-    if (!best || score < best.score) {
-      best = {
-        score,
-        rowBytes,
-        width,
-        height,
-        remainder,
-      };
-    }
+function readSyncPage(bytes, pageIndex) {
+  const offset = pageIndex * SYNC_PAGE_SIZE_BYTES;
+  const end = offset + SYNC_PAGE_SIZE_BYTES;
+  if (end > bytes.length) {
+    return null;
   }
 
-  return best;
+  return bytes.subarray(offset, end);
 }
 
-function estimateBoundsAspect(bounds) {
-  const longitudeSpan = Math.max(Math.abs(bounds.east - bounds.west), 1);
-  const latitudeSpan = Math.max(Math.abs(bounds.north - bounds.south), 1);
-  return longitudeSpan / latitudeSpan;
+function latLngToFogGrid(lat, lng) {
+  const mapPoint = latLngToFogMapPoint(lat, lng);
+  return fogMapPointToDocumentGrid(mapPoint.x, mapPoint.y);
 }
 
-function drawPackedBitmapToWorldMask(worldCtx, packedBitmap, bounds) {
+function latLngToFogMapPoint(lat, lng) {
+  const scale = 256 * 2 ** FOG_WORLD_PIXEL_ZOOM;
+  const x = ((lng + 180) / 360) * scale;
+  const sinLat = Math.sin((lat * Math.PI) / 180);
+  const mercatorY =
+    0.5 -
+    Math.log((1 + Math.min(Math.max(sinLat, -0.9999), 0.9999)) / (1 - Math.min(Math.max(sinLat, -0.9999), 0.9999))) /
+      (4 * Math.PI);
+
+  return {
+    x,
+    y: mercatorY * scale,
+  };
+}
+
+function fogMapPointToDocumentGrid(mapPointX, mapPointY) {
+  // Mirror the native ConvertMapPointToDocument flow:
+  // world pixel @ z20 -> divide by 64 -> document(8192 cells) -> block(64 cells).
+  const cellX = Math.trunc(mapPointX * (1 / FOG_CELL_DIVISOR));
+  const cellY = Math.trunc(mapPointY * (1 / FOG_CELL_DIVISOR));
+  const documentX = Math.floor(cellX / FOG_DOCUMENT_SIZE_CELLS);
+  const documentY = Math.floor(cellY / FOG_DOCUMENT_SIZE_CELLS);
+  const localCellX = mod(cellX, FOG_DOCUMENT_SIZE_CELLS);
+  const localCellY = mod(cellY, FOG_DOCUMENT_SIZE_CELLS);
+  const blockX = Math.floor(localCellX / FOG_BLOCK_SIZE_CELLS);
+  const blockY = Math.floor(localCellY / FOG_BLOCK_SIZE_CELLS);
+
+  return {
+    mapPointX,
+    mapPointY,
+    cellX,
+    cellY,
+    documentX,
+    documentY,
+    documentId: documentX + documentY * FOG_DOCUMENTS_PER_ROW,
+    localCellX,
+    localCellY,
+    blockX,
+    blockY,
+    blockId: blockX + blockY * FOG_BLOCKS_PER_DOCUMENT,
+  };
+}
+
+function mod(value, divisor) {
+  return ((value % divisor) + divisor) % divisor;
+}
+
+function drawSyncDocumentToWorldMask(worldCtx, packedBitmap, bounds) {
   const x = ((bounds.west + 180) / 360) * WORLD_MASK_WIDTH;
   const y = ((WORLD_MASK_NORTH - bounds.north) / (WORLD_MASK_NORTH - WORLD_MASK_SOUTH)) * WORLD_MASK_HEIGHT;
   const width = ((bounds.east - bounds.west) / 360) * WORLD_MASK_WIDTH;
@@ -883,3 +1006,22 @@ function loadState() {
 function persistState() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
+
+window.fogDebug = {
+  latLngToFogGrid,
+  latLngToFogMapPoint,
+  fogMapPointToDocumentGrid,
+  decodeSyncPageTree,
+  constants: {
+    FOG_WORLD_PIXEL_ZOOM,
+    FOG_CELL_DIVISOR,
+    FOG_DOCUMENT_SIZE_CELLS,
+    FOG_BLOCK_SIZE_CELLS,
+    FOG_BLOCKS_PER_DOCUMENT,
+    FOG_DOCUMENTS_PER_ROW,
+    SYNC_PAGE_SIZE_BYTES,
+    SYNC_ROOT_PAGE_COUNT,
+    SYNC_ROOT_GRID_SIZE,
+    SYNC_BLOCK_SIZE_BITS,
+  },
+};
