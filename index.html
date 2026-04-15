@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fog of World Web</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <p class="eyebrow">Fog of World</p>
+        <h1>Web Prototype</h1>
+        <p class="description">
+          先建立以 OpenStreetMap 為底的網頁版本地圖。後續可以再往「迷霧覆蓋」與「足跡揭露」功能擴充。
+        </p>
+      </section>
+
+      <section class="map-panel">
+        <div class="map-header">
+          <div>
+            <h2>OpenStreetMap Base Layer</h2>
+            <p>目前先用 Leaflet 載入 OSM 圖磚。</p>
+          </div>
+          <button id="locateBtn" type="button">定位到目前位置</button>
+        </div>
+        <div id="map" aria-label="OpenStreetMap 地圖"></div>
+        <p id="status" class="status">地圖初始化中...</p>
+      </section>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
