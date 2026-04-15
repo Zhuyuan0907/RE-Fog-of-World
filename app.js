@@ -17,10 +17,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
 
-const marker = L.marker([defaultView.lat, defaultView.lng])
-  .addTo(map)
-  .bindPopup("預設位置：台北 101 附近")
-  .openPopup();
+let marker;
 
 statusEl.textContent = "OpenStreetMap 已載入。";
 
@@ -37,10 +34,12 @@ locateBtn.addEventListener("click", () => {
       const { latitude, longitude } = coords;
 
       map.setView([latitude, longitude], 16);
-      marker
-        .setLatLng([latitude, longitude])
-        .bindPopup("你的目前位置")
-        .openPopup();
+      if (!marker) {
+        marker = L.marker([latitude, longitude]).addTo(map);
+      } else {
+        marker.setLatLng([latitude, longitude]);
+      }
+      marker.bindPopup("你的目前位置").openPopup();
 
       statusEl.textContent = `已定位到緯度 ${latitude.toFixed(5)}、經度 ${longitude.toFixed(5)}。`;
     },
