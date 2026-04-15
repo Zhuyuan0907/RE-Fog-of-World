@@ -19,46 +19,14 @@ const WORLD_MASK_SOUTH = -85;
 
 const SYNC_CONTINENT_ORDER = ["W", "AS", "AF", "NA", "SA", "AN", "EU", "OC"];
 const SYNC_CONTINENT_CONFIG = {
-  W: {
-    code: "W",
-    label: "海洋/世界",
-    bounds: { west: -180, east: 180, south: -85, north: 85 },
-  },
-  AS: {
-    code: "AS",
-    label: "亞洲",
-    bounds: { west: 25, east: 180, south: -10, north: 82 },
-  },
-  AF: {
-    code: "AF",
-    label: "非洲",
-    bounds: { west: -20, east: 55, south: -35, north: 38 },
-  },
-  NA: {
-    code: "NA",
-    label: "北美洲",
-    bounds: { west: -170, east: -15, south: 5, north: 84 },
-  },
-  SA: {
-    code: "SA",
-    label: "南美洲",
-    bounds: { west: -93, east: -28, south: -56, north: 14 },
-  },
-  AN: {
-    code: "AN",
-    label: "南極洲",
-    bounds: { west: -180, east: 180, south: -90, north: -58 },
-  },
-  EU: {
-    code: "EU",
-    label: "歐洲",
-    bounds: { west: -31, east: 60, south: 34, north: 72 },
-  },
-  OC: {
-    code: "OC",
-    label: "大洋洲",
-    bounds: { west: 110, east: 180, south: -50, north: 30 },
-  },
+  W: { code: "W", label: "海洋/世界", bounds: { west: -180, east: 180, south: -85, north: 85 } },
+  AS: { code: "AS", label: "亞洲", bounds: { west: 25, east: 180, south: -10, north: 82 } },
+  AF: { code: "AF", label: "非洲", bounds: { west: -20, east: 55, south: -35, north: 38 } },
+  NA: { code: "NA", label: "北美洲", bounds: { west: -170, east: -15, south: 5, north: 84 } },
+  SA: { code: "SA", label: "南美洲", bounds: { west: -93, east: -28, south: -56, north: 14 } },
+  AN: { code: "AN", label: "南極洲", bounds: { west: -180, east: 180, south: -90, north: -58 } },
+  EU: { code: "EU", label: "歐洲", bounds: { west: -31, east: 60, south: 34, north: 72 } },
+  OC: { code: "OC", label: "大洋洲", bounds: { west: 110, east: 180, south: -50, north: 30 } },
 };
 
 const statusEl = document.querySelector("#status");
@@ -70,273 +38,298 @@ const clearBtn = document.querySelector("#clearBtn");
 const fileInput = document.querySelector("#fileInput");
 const syncInput = document.querySelector("#syncInput");
 
-const map = L.map("map", {
-  zoomControl: true,
-}).setView([defaultView.lat, defaultView.lng], defaultView.zoom);
-
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-}).addTo(map);
-
-const routeLayer = L.layerGroup().addTo(map);
-
-const FogLayer = L.Layer.extend({
-  initialize(reveals = [], syncWorldMask = null) {
-    this.reveals = reveals;
-    this.syncWorldMask = syncWorldMask;
-  },
-
-  onAdd(activeMap) {
-    this._map = activeMap;
-    this._canvas = L.DomUtil.create("canvas", "leaflet-fog-layer");
-    this._canvas.style.pointerEvents = "none";
-    this._ctx = this._canvas.getContext("2d");
-
-    activeMap.getPanes().overlayPane.appendChild(this._canvas);
-    activeMap.on("move zoom resize", this._reset, this);
-    this._reset();
-  },
-
-  onRemove(activeMap) {
-    activeMap.off("move zoom resize", this._reset, this);
-    L.DomUtil.remove(this._canvas);
-  },
-
-  setReveals(reveals) {
-    this.reveals = reveals;
-    this._redraw();
-  },
-
-  setSyncWorldMask(syncWorldMask) {
-    this.syncWorldMask = syncWorldMask;
-    this._redraw();
-  },
-
-  _reset() {
-    const size = this._map.getSize();
-    const topLeft = this._map.containerPointToLayerPoint([0, 0]);
-
-    L.DomUtil.setPosition(this._canvas, topLeft);
-    this._canvas.width = size.x;
-    this._canvas.height = size.y;
-    this._redraw();
-  },
-
-  _redraw() {
-    if (!this._ctx) {
-      return;
-    }
-
-    const ctx = this._ctx;
-    const { width, height } = this._canvas;
-
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "rgba(6, 10, 8, 0.9)";
-    ctx.fillRect(0, 0, width, height);
-    ctx.globalCompositeOperation = "destination-out";
-
-    if (this.syncWorldMask) {
-      this._punchSyncWorldMask(ctx);
-    }
-
-    for (const reveal of this.reveals) {
-      const center = L.latLng(reveal.lat, reveal.lng);
-      const point = this._map.latLngToContainerPoint(center);
-      const radius = this._metersToPixels(center, reveal.radius);
-      const glowRadius = radius * 1.35;
-
-      const gradient = ctx.createRadialGradient(
-        point.x,
-        point.y,
-        Math.max(radius * 0.35, 1),
-        point.x,
-        point.y,
-        glowRadius,
-      );
-
-      gradient.addColorStop(0, "rgba(0, 0, 0, 1)");
-      gradient.addColorStop(0.72, "rgba(0, 0, 0, 0.92)");
-      gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, glowRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.globalCompositeOperation = "source-over";
-  },
-
-  _punchSyncWorldMask(ctx) {
-    const source = this.syncWorldMask;
-    const rowLatitudeSpan = (WORLD_MASK_NORTH - WORLD_MASK_SOUTH) / source.height;
-    const left = this._map.latLngToContainerPoint([0, -180]).x;
-    const right = this._map.latLngToContainerPoint([0, 180]).x;
-    const width = right - left;
-
-    if (!Number.isFinite(left) || !Number.isFinite(right) || width === 0) {
-      return;
-    }
-
-    // Render the stored world mask row-by-row so it follows Leaflet's Mercator Y transform.
-    for (let row = 0; row < source.height; row += 1) {
-      const latTop = WORLD_MASK_NORTH - row * rowLatitudeSpan;
-      const latBottom = latTop - rowLatitudeSpan;
-      const y1 = this._map.latLngToContainerPoint([latTop, 0]).y;
-      const y2 = this._map.latLngToContainerPoint([latBottom, 0]).y;
-      const top = Math.min(y1, y2);
-      const drawHeight = Math.max(Math.abs(y2 - y1), 1);
-
-      if (top > this._canvas.height || top + drawHeight < 0) {
-        continue;
-      }
-
-      ctx.drawImage(source, 0, row, source.width, 1, left, top, width, drawHeight);
-    }
-  },
-
-  _metersToPixels(center, meters) {
-    const bounds = center.toBounds(meters * 2);
-    const northEastPoint = this._map.latLngToContainerPoint(bounds.getNorthEast());
-    const centerPoint = this._map.latLngToContainerPoint(center);
-    return Math.max(Math.abs(northEastPoint.x - centerPoint.x), 14);
-  },
-});
-
-const state = loadState();
-const fogLayer = new FogLayer([], null);
-
-fogLayer.addTo(map);
-redrawRoutesAndFog();
-
+let map;
+let routeLayer;
+let fogLayer;
 let marker;
 let watchId = null;
 let liveRoute = null;
 let syncWorldMask = null;
-let syncSummary = null;
 
-setStatus("Fog of World 風格迷霧已啟用。可追蹤即時移動、匯入 GPX/KML，或實驗性匯入 Sync。");
-updateTrackButton();
+const state = loadState();
 
-locateBtn.addEventListener("click", () => {
-  if (!navigator.geolocation) {
-    setStatus("你的瀏覽器不支援定位。");
-    return;
-  }
+function initializeApp() {
+  map = L.map("map", {
+    zoomControl: true,
+  }).setView([defaultView.lat, defaultView.lng], defaultView.zoom);
 
-  setStatus("正在取得目前位置...");
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
 
-  navigator.geolocation.getCurrentPosition(
-    ({ coords }) => {
-      const point = [coords.latitude, coords.longitude];
-      map.setView(point, 16);
-      updateMarker(point, "你的目前位置");
-      appendPointToRoute(ensureLiveRoute(), point);
-      setStatus(`已加入目前位置。精度約 ${Math.round(coords.accuracy)} 公尺。`);
-    },
-    (error) => {
-      const message =
-        error.code === error.PERMISSION_DENIED
-          ? "定位權限被拒絕。"
-          : "無法取得位置。";
-      setStatus(message);
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 10000,
-    },
-  );
-});
+  routeLayer = L.layerGroup().addTo(map);
+  fogLayer = new FogLayer([], null);
+  fogLayer.addTo(map);
 
-trackBtn.addEventListener("click", () => {
-  if (watchId === null) {
-    startLiveTracking();
-  } else {
-    stopLiveTracking();
-  }
-});
-
-importBtn.addEventListener("click", () => {
-  fileInput.click();
-});
-
-syncBtn.addEventListener("click", () => {
-  syncInput.click();
-});
-
-clearBtn.addEventListener("click", () => {
-  state.routes = [];
-  liveRoute = null;
-  syncWorldMask = null;
-  syncSummary = null;
-  persistState();
+  bindEvents();
   redrawRoutesAndFog();
-  if (marker) {
-    map.removeLayer(marker);
-    marker = null;
-  }
-  setStatus("已清除網頁版紀錄與本次 Sync 匯入結果。");
-});
+  updateTrackButton();
+  setStatus("Fog of World 風格迷霧已啟用。可追蹤即時移動、匯入 GPX/KML，或實驗性匯入 Sync。");
+}
 
-fileInput.addEventListener("change", async (event) => {
-  const [file] = event.target.files ?? [];
-  if (!file) {
-    return;
-  }
-
-  try {
-    const text = await file.text();
-    const importedRoutes = importTrackFile(file.name, text);
-
-    if (importedRoutes.length === 0) {
-      setStatus("沒有找到可匯入的有效軌跡。");
+function bindEvents() {
+  locateBtn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      setStatus("你的瀏覽器不支援定位。");
       return;
     }
 
-    state.routes.push(...importedRoutes);
+    setStatus("正在取得目前位置...");
+
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const point = [coords.latitude, coords.longitude];
+        map.setView(point, 16);
+        updateMarker(point, "你的目前位置");
+        appendPointToRoute(ensureLiveRoute(), point);
+        setStatus(`已加入目前位置。精度約 ${Math.round(coords.accuracy)} 公尺。`);
+      },
+      (error) => {
+        const message =
+          error.code === error.PERMISSION_DENIED
+            ? "定位權限被拒絕。"
+            : "無法取得位置。";
+        setStatus(message);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+      },
+    );
+  });
+
+  trackBtn.addEventListener("click", () => {
+    if (watchId === null) {
+      startLiveTracking();
+    } else {
+      stopLiveTracking();
+    }
+  });
+
+  importBtn.addEventListener("click", () => {
+    fileInput.click();
+  });
+
+  syncBtn.addEventListener("click", () => {
+    syncInput.click();
+  });
+
+  clearBtn.addEventListener("click", () => {
+    state.routes = [];
+    liveRoute = null;
+    syncWorldMask = null;
     persistState();
     redrawRoutesAndFog();
-    fitToRoutes(importedRoutes);
 
-    const importedPoints = importedRoutes.reduce((sum, route) => sum + route.points.length, 0);
-    setStatus(`已匯入 ${importedRoutes.length} 條軌跡，共 ${importedPoints} 個點。超過 10km 的跳點已忽略。`);
-  } catch (error) {
-    setStatus(`匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
-  } finally {
-    fileInput.value = "";
+    if (marker) {
+      map.removeLayer(marker);
+      marker = null;
+    }
+
+    setStatus("已清除網頁版紀錄與本次 Sync 匯入結果。");
+  });
+
+  fileInput.addEventListener("change", async (event) => {
+    const [file] = event.target.files ?? [];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const importedRoutes = importTrackFile(file.name, text);
+
+      if (importedRoutes.length === 0) {
+        setStatus("沒有找到可匯入的有效軌跡。");
+        return;
+      }
+
+      state.routes.push(...importedRoutes);
+      persistState();
+      redrawRoutesAndFog();
+      fitToRoutes(importedRoutes);
+
+      const importedPoints = importedRoutes.reduce((sum, route) => sum + route.points.length, 0);
+      setStatus(`已匯入 ${importedRoutes.length} 條軌跡，共 ${importedPoints} 個點。超過 10km 的跳點已忽略。`);
+    } catch (error) {
+      setStatus(`匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
+    } finally {
+      fileInput.value = "";
+    }
+  });
+
+  syncInput.addEventListener("change", async (event) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+
+    try {
+      setStatus(`正在分析 ${files.length} 個 Sync 檔案...`);
+      const result = await importSyncDirectory(files);
+      syncWorldMask = result.canvas;
+      redrawRoutesAndFog();
+
+      map.fitBounds(
+        [
+          [WORLD_MASK_SOUTH, -180],
+          [WORLD_MASK_NORTH, 180],
+        ],
+        { padding: [18, 18], maxZoom: 3 },
+      );
+
+      const labels = result.summary.documents.map((item) => item.label).join("、");
+      setStatus(`已實驗性還原 Sync：${labels}。此結果是依 APK 結構與 continent 尺寸推測，不是原生資料庫 1:1 解碼。`);
+    } catch (error) {
+      setStatus(`Sync 匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
+    } finally {
+      syncInput.value = "";
+    }
+  });
+}
+
+let FogLayer = null;
+
+if (window.L) {
+  FogLayer = L.Layer.extend({
+    initialize(reveals = [], syncMask = null) {
+      this.reveals = reveals;
+      this.syncMask = syncMask;
+    },
+
+    onAdd(activeMap) {
+      this._map = activeMap;
+      this._canvas = L.DomUtil.create("canvas", "leaflet-fog-layer");
+      this._canvas.style.pointerEvents = "none";
+      this._ctx = this._canvas.getContext("2d");
+
+      activeMap.getPanes().overlayPane.appendChild(this._canvas);
+      activeMap.on("move zoom resize", this._reset, this);
+      this._reset();
+    },
+
+    onRemove(activeMap) {
+      activeMap.off("move zoom resize", this._reset, this);
+      L.DomUtil.remove(this._canvas);
+    },
+
+    setReveals(reveals) {
+      this.reveals = reveals;
+      this._redraw();
+    },
+
+    setSyncMask(syncMask) {
+      this.syncMask = syncMask;
+      this._redraw();
+    },
+
+    _reset() {
+      const size = this._map.getSize();
+      const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+
+      L.DomUtil.setPosition(this._canvas, topLeft);
+      this._canvas.width = size.x;
+      this._canvas.height = size.y;
+      this._redraw();
+    },
+
+    _redraw() {
+      if (!this._ctx) {
+        return;
+      }
+
+      const ctx = this._ctx;
+      const { width, height } = this._canvas;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "rgba(6, 10, 8, 0.9)";
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = "destination-out";
+
+      if (this.syncMask) {
+        this._drawSyncMask(ctx);
+      }
+
+      for (const reveal of this.reveals) {
+        const center = L.latLng(reveal.lat, reveal.lng);
+        const point = this._map.latLngToContainerPoint(center);
+        const radius = this._metersToPixels(center, reveal.radius);
+        const glowRadius = radius * 1.35;
+
+        const gradient = ctx.createRadialGradient(
+          point.x,
+          point.y,
+          Math.max(radius * 0.35, 1),
+          point.x,
+          point.y,
+          glowRadius,
+        );
+
+        gradient.addColorStop(0, "rgba(0, 0, 0, 1)");
+        gradient.addColorStop(0.72, "rgba(0, 0, 0, 0.92)");
+        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, glowRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+    },
+
+    _drawSyncMask(ctx) {
+      const source = this.syncMask;
+      const rowLatitudeSpan = (WORLD_MASK_NORTH - WORLD_MASK_SOUTH) / source.height;
+      const left = this._map.latLngToContainerPoint([0, -180]).x;
+      const right = this._map.latLngToContainerPoint([0, 180]).x;
+      const drawWidth = right - left;
+
+      if (!Number.isFinite(left) || !Number.isFinite(right) || drawWidth === 0) {
+        return;
+      }
+
+      for (let row = 0; row < source.height; row += 1) {
+        const latTop = WORLD_MASK_NORTH - row * rowLatitudeSpan;
+        const latBottom = latTop - rowLatitudeSpan;
+        const y1 = this._map.latLngToContainerPoint([latTop, 0]).y;
+        const y2 = this._map.latLngToContainerPoint([latBottom, 0]).y;
+        const top = Math.min(y1, y2);
+        const drawHeight = Math.max(Math.abs(y2 - y1), 1);
+
+        if (top > this._canvas.height || top + drawHeight < 0) {
+          continue;
+        }
+
+        ctx.drawImage(source, 0, row, source.width, 1, left, top, drawWidth, drawHeight);
+      }
+    },
+
+    _metersToPixels(center, meters) {
+      const bounds = center.toBounds(meters * 2);
+      const northEastPoint = this._map.latLngToContainerPoint(bounds.getNorthEast());
+      const centerPoint = this._map.latLngToContainerPoint(center);
+      return Math.max(Math.abs(northEastPoint.x - centerPoint.x), 14);
+    },
+  });
+}
+
+if (!window.L) {
+  disableControls();
+  setStatus("Leaflet 載入失敗，地圖沒有初始化。最常見原因是 CDN 無法連線。");
+} else {
+  initializeApp();
+}
+
+function disableControls() {
+  for (const element of [locateBtn, trackBtn, importBtn, syncBtn, clearBtn]) {
+    if (element) {
+      element.disabled = true;
+    }
   }
-});
-
-syncInput.addEventListener("change", async (event) => {
-  const files = Array.from(event.target.files ?? []);
-  if (files.length === 0) {
-    return;
-  }
-
-  try {
-    setStatus(`正在分析 ${files.length} 個 Sync 檔案...`);
-    const result = await importSyncDirectory(files);
-    syncWorldMask = result.canvas;
-    syncSummary = result.summary;
-    redrawRoutesAndFog();
-    map.fitBounds(
-      [
-        [WORLD_MASK_SOUTH, -180],
-        [WORLD_MASK_NORTH, 180],
-      ],
-      { padding: [18, 18], maxZoom: 3 },
-    );
-
-    const labels = result.summary.documents.map((item) => item.label).join("、");
-    setStatus(`已實驗性還原 Sync：${labels}。此結果是依 APK 結構與 continent 尺寸推測，不是原生資料庫 1:1 解碼。`);
-  } catch (error) {
-    setStatus(`Sync 匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
-  } finally {
-    syncInput.value = "";
-  }
-});
+}
 
 function startLiveTracking() {
   if (!navigator.geolocation) {
@@ -354,7 +347,7 @@ function startLiveTracking() {
       }
 
       const point = [coords.latitude, coords.longitude];
-      const appended = appendPointToRoute(liveRoute, point, LIVE_REVEAL_RADIUS_METERS);
+      const appended = appendPointToRoute(liveRoute, point);
 
       if (!appended) {
         return;
@@ -428,8 +421,11 @@ function appendPointToRoute(route, point) {
 }
 
 function redrawRoutesAndFog() {
-  routeLayer.clearLayers();
+  if (!routeLayer || !fogLayer) {
+    return;
+  }
 
+  routeLayer.clearLayers();
   const reveals = [];
 
   for (const route of state.routes) {
@@ -450,13 +446,12 @@ function redrawRoutesAndFog() {
     reveals.push(...buildRevealSamples(route.points, resolveRouteRadius(route)));
   }
 
-  fogLayer.setSyncWorldMask(syncWorldMask);
+  fogLayer.setSyncMask(syncWorldMask);
   fogLayer.setReveals(reveals);
 }
 
 function buildRevealSamples(points, radius) {
   const reveals = [];
-
   if (points.length === 0) {
     return reveals;
   }
@@ -515,11 +510,15 @@ function updateMarker(point, label) {
 }
 
 function updateTrackButton() {
-  trackBtn.textContent = watchId === null ? "開始追蹤" : "停止追蹤";
+  if (trackBtn) {
+    trackBtn.textContent = watchId === null ? "開始追蹤" : "停止追蹤";
+  }
 }
 
 function setStatus(message) {
-  statusEl.textContent = message;
+  if (statusEl) {
+    statusEl.textContent = message;
+  }
 }
 
 function fitToRoutes(routes) {
@@ -547,10 +546,6 @@ function importTrackFile(filename, text) {
 }
 
 async function importSyncDirectory(files) {
-  if (typeof window.pako?.inflate !== "function") {
-    throw new Error("缺少 zlib 解壓模組。");
-  }
-
   const decodedFiles = [];
 
   for (const file of files) {
@@ -562,7 +557,7 @@ async function importSyncDirectory(files) {
     let decompressed;
 
     try {
-      decompressed = window.pako.inflate(compressed);
+      decompressed = await inflateZlib(compressed);
     } catch {
       continue;
     }
@@ -623,6 +618,20 @@ async function importSyncDirectory(files) {
   return { canvas, summary };
 }
 
+async function inflateZlib(bytes) {
+  if (typeof window.pako?.inflate === "function") {
+    return window.pako.inflate(bytes);
+  }
+
+  if (typeof DecompressionStream === "function") {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+    const response = new Response(stream);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  throw new Error("瀏覽器不支援 zlib 解壓，且 pako 未載入。");
+}
+
 function decodePackedSyncBitmap(bytes, bounds) {
   const totalBytes = bytes.length;
   const aspect = estimateBoundsAspect(bounds);
@@ -631,6 +640,11 @@ function decodePackedSyncBitmap(bytes, bounds) {
   sourceCanvas.width = best.width;
   sourceCanvas.height = best.height;
   const sourceCtx = sourceCanvas.getContext("2d");
+
+  if (!sourceCtx) {
+    throw new Error("無法建立中繼畫布。");
+  }
+
   const imageData = sourceCtx.createImageData(best.width, best.height);
   const pixelData = imageData.data;
   const usableBytes = best.rowBytes * best.height;
