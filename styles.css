@@ -43,6 +43,11 @@ button:hover {
   align-items: flex-end;
 }
 
+.button-row {
+  display: flex;
+  gap: 10px;
+}
+
 .status {
   max-width: min(280px, calc(100vw - 32px));
   margin: 0;
@@ -61,6 +66,10 @@ button:hover {
     right: 12px;
     left: 12px;
     align-items: stretch;
+  }
+
+  .button-row {
+    flex-direction: column;
   }
 
   button,

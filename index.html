@@ -15,9 +15,17 @@
   <body>
     <div id="map" aria-label="OpenStreetMap 地圖"></div>
     <div class="map-ui">
-      <button id="locateBtn" type="button">定位</button>
+      <div class="button-row">
+        <button id="locateBtn" type="button">定位</button>
+        <button id="trackBtn" type="button">開始追蹤</button>
+      </div>
+      <div class="button-row">
+        <button id="importBtn" type="button">匯入 GPX/KML</button>
+        <button id="clearBtn" type="button">清除紀錄</button>
+      </div>
       <p id="status" class="status">地圖初始化中...</p>
     </div>
+    <input id="fileInput" type="file" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" hidden />
 
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
