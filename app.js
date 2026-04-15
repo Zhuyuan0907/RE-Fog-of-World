@@ -29,16 +29,11 @@ const SYNC_LEAF_PAGES_PER_BLOCK = 2;
 const SYNC_BLOCK_SIZE_BITS = 64;
 const SYNC_HALF_BLOCK_ROWS = 32;
 
-const SYNC_CONTINENT_ORDER = ["W", "AS", "AF", "NA", "SA", "AN", "EU", "OC"];
-const SYNC_CONTINENT_CONFIG = {
-  W: { code: "W", label: "海洋/世界", bounds: { west: -180, east: 180, south: -85, north: 85 } },
-  AS: { code: "AS", label: "亞洲", bounds: { west: 25, east: 180, south: -10, north: 82 } },
-  AF: { code: "AF", label: "非洲", bounds: { west: -20, east: 55, south: -35, north: 38 } },
-  NA: { code: "NA", label: "北美洲", bounds: { west: -170, east: -15, south: 5, north: 84 } },
-  SA: { code: "SA", label: "南美洲", bounds: { west: -93, east: -28, south: -56, north: 14 } },
-  AN: { code: "AN", label: "南極洲", bounds: { west: -180, east: 180, south: -90, north: -58 } },
-  EU: { code: "EU", label: "歐洲", bounds: { west: -31, east: 60, south: 34, north: 72 } },
-  OC: { code: "OC", label: "大洋洲", bounds: { west: 110, east: 180, south: -50, north: 30 } },
+const SYNC_MIN_DOCUMENTS = 9;
+const SYNC_DOCUMENT_CANVAS_SIZE = 1024;
+const TAIWAN_SYNC_ANCHOR = {
+  documentX: 426,
+  documentY: 219,
 };
 
 const statusEl = document.querySelector("#status");
@@ -184,18 +179,18 @@ function bindEvents() {
       syncWorldMask = result.canvas;
       redrawRoutesAndFog();
 
-      map.fitBounds(
-        [
-          [WORLD_MASK_SOUTH, -180],
-          [WORLD_MASK_NORTH, 180],
-        ],
-        { padding: [18, 18], maxZoom: 3 },
-      );
+      if (result.summary.bounds) {
+        map.fitBounds(
+          [
+            [result.summary.bounds.south, result.summary.bounds.west],
+            [result.summary.bounds.north, result.summary.bounds.east],
+          ],
+          { padding: [24, 24], maxZoom: 9 },
+        );
+      }
 
       const labels = result.summary.documents.map((item) => item.label).join("、");
-      const ignored = result.summary.ignoredDocuments.map((item) => item.filename).join("、");
-      const ignoredText = ignored ? ` 略過：${ignored}。` : "";
-      setStatus(`已用 root/leaf page tree 還原 Sync：${labels}。${ignoredText} 目前 continent 對應仍是推測，不是原生資料庫 1:1 解碼。`);
+      setStatus(`已用 root/leaf page tree 還原 Sync：${labels}。目前改用相鄰 document 格網推定位置，已不再套用 continent heuristic。`);
     } catch (error) {
       setStatus(`Sync 匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
     } finally {
@@ -582,8 +577,8 @@ async function importSyncDirectory(files) {
     });
   }
 
-  if (decodedFiles.length < 9) {
-    throw new Error("可解壓的 Sync 檔案不足。預期至少 9 個 zlib 檔案。");
+  if (decodedFiles.length < SYNC_MIN_DOCUMENTS) {
+    throw new Error(`可解壓的 Sync 檔案不足。預期至少 ${SYNC_MIN_DOCUMENTS} 個 zlib 檔案。`);
   }
 
   const parsedDocuments = decodedFiles
@@ -594,11 +589,11 @@ async function importSyncDirectory(files) {
     .filter((file) => file.decoded.refCount > 0)
     .sort((left, right) => right.decoded.refCount - left.decoded.refCount);
 
-  if (parsedDocuments.length < SYNC_CONTINENT_ORDER.length) {
-    throw new Error("目前只支援 8 份 exploration documents 的 Sync 目錄。");
+  if (parsedDocuments.length < SYNC_MIN_DOCUMENTS) {
+    throw new Error("目前至少需要 9 份可解析的 Sync documents。");
   }
-
-  const { explorationDocuments, ignoredDocuments } = assignSyncDocumentsToContinents(parsedDocuments);
+  const relativeLayout = inferRelativeSyncLayout(parsedDocuments);
+  const placedDocuments = assignSyncDocumentsToGrid(relativeLayout, TAIWAN_SYNC_ANCHOR);
 
   const canvas = document.createElement("canvas");
   canvas.width = WORLD_MASK_WIDTH;
@@ -610,25 +605,21 @@ async function importSyncDirectory(files) {
   }
 
   const summary = {
-    ignoredDocuments: ignoredDocuments.map((file) => ({
-      filename: file.name,
-      refs: file.decoded.refCount,
-      bytes: file.bytes.length,
-    })),
     documents: [],
+    bounds: null,
   };
 
-  for (let index = 0; index < SYNC_CONTINENT_ORDER.length; index += 1) {
-    const code = SYNC_CONTINENT_ORDER[index];
-    const config = SYNC_CONTINENT_CONFIG[code];
-    const file = explorationDocuments[index];
-    const packedBitmap = renderSyncDocumentMask(file.decoded, config.bounds);
+  let combinedBounds = null;
 
-    drawSyncDocumentToWorldMask(ctx, packedBitmap, config.bounds);
+  for (const file of placedDocuments) {
+    const bounds = fogDocumentToBounds(file.documentX, file.documentY);
+    const packedBitmap = renderSyncDocumentMask(file.decoded);
+
+    drawSyncDocumentToWorldMask(ctx, packedBitmap, bounds);
+    combinedBounds = extendBounds(combinedBounds, bounds);
 
     summary.documents.push({
-      code,
-      label: config.label,
+      label: `${file.name} -> doc(${file.documentX},${file.documentY})`,
       filename: file.name,
       bytes: file.bytes.length,
       refs: file.decoded.refCount,
@@ -636,9 +627,13 @@ async function importSyncDirectory(files) {
       blockBounds: file.decoded.blockBounds,
       remainder: file.decoded.remainderBytes,
       trailingPages: file.decoded.trailingPages,
+      relativeGrid: { x: file.relativeX, y: file.relativeY },
+      documentGrid: { x: file.documentX, y: file.documentY },
+      bounds,
     });
   }
 
+  summary.bounds = combinedBounds;
   return { canvas, summary };
 }
 
@@ -717,77 +712,233 @@ function decodeSyncPageTree(bytes) {
   };
 }
 
-function assignSyncDocumentsToContinents(parsedDocuments) {
-  const pool = [...parsedDocuments];
-  const assignments = new Map();
+function inferRelativeSyncLayout(parsedDocuments) {
+  const edgeScores = buildSyncEdgeScores(parsedDocuments);
+  const byName = new Map(parsedDocuments.map((file) => [file.name, file]));
+  const occupied = new Map();
+  const placed = new Map();
+  const remaining = new Set(parsedDocuments.map((file) => file.name));
+  const start = [...parsedDocuments].sort((left, right) => right.decoded.refCount - left.decoded.refCount)[0];
 
-  const take = (code, predicate) => {
-    const index = pool.findIndex(predicate);
-    if (index === -1) {
-      return;
+  placed.set(start.name, { x: 0, y: 0 });
+  occupied.set("0,0", start.name);
+  remaining.delete(start.name);
+
+  while (remaining.size > 0) {
+    let bestCandidate = null;
+
+    for (const name of remaining) {
+      const neighbors = edgeScores.get(name) ?? [];
+      const candidateCells = new Set();
+
+      for (const link of neighbors) {
+        const anchor = placed.get(link.target);
+        if (!anchor) {
+          continue;
+        }
+
+        const candidate = shiftPoint(anchor, oppositeDirection(link.direction));
+        if (!occupied.has(`${candidate.x},${candidate.y}`)) {
+          candidateCells.add(`${candidate.x},${candidate.y}`);
+        }
+      }
+
+      if (candidateCells.size === 0) {
+        for (const anchor of placed.values()) {
+          for (const direction of ["north", "south", "west", "east"]) {
+            const candidate = shiftPoint(anchor, direction);
+            if (!occupied.has(`${candidate.x},${candidate.y}`)) {
+              candidateCells.add(`${candidate.x},${candidate.y}`);
+            }
+          }
+        }
+      }
+
+      for (const key of candidateCells) {
+        const [xText, yText] = key.split(",");
+        const candidate = { x: Number(xText), y: Number(yText) };
+        const score = scoreSyncPlacement(name, candidate, placed, edgeScores);
+
+        if (!bestCandidate || score > bestCandidate.score) {
+          bestCandidate = { name, candidate, score };
+        }
+      }
     }
 
-    assignments.set(code, pool.splice(index, 1)[0]);
-  };
+    if (!bestCandidate) {
+      break;
+    }
 
-  take("W", (file) => file.decoded.refCount === Math.max(...pool.map((item) => item.decoded.refCount)));
-  take(
-    "AN",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.y === Math.max(...pool.map((item) => item.decoded.blockCentroid?.y ?? -Infinity)),
-  );
-  take(
-    "OC",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.x > 80 &&
-      file.decoded.blockCentroid.y > 70,
-  );
-  take(
-    "AS",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.x > 100 &&
-      file.decoded.blockCentroid.y < 80,
-  );
-  take(
-    "SA",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.x < 40 &&
-      file.decoded.blockCentroid.y > 45 &&
-      file.decoded.refCount < 700,
-  );
-  take(
-    "NA",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.x < 45,
-  );
-  take(
-    "EU",
-    (file) =>
-      file.decoded.blockCentroid &&
-      file.decoded.blockCentroid.x > 55 &&
-      file.decoded.blockCentroid.x < 95 &&
-      file.decoded.refCount < 1000,
-  );
-  take("AF", () => pool.length > 0);
-
-  const explorationDocuments = SYNC_CONTINENT_ORDER.map((code) => assignments.get(code)).filter(Boolean);
-  const ignoredDocuments = pool;
-
-  if (explorationDocuments.length !== SYNC_CONTINENT_ORDER.length) {
-    throw new Error("Sync document 分類不足，尚未能完整對應到 8 個 continent。");
+    placed.set(bestCandidate.name, bestCandidate.candidate);
+    occupied.set(`${bestCandidate.candidate.x},${bestCandidate.candidate.y}`, bestCandidate.name);
+    remaining.delete(bestCandidate.name);
   }
 
-  return { explorationDocuments, ignoredDocuments };
+  const normalized = normalizeRelativeLayout(placed);
+  return [...normalized.entries()]
+    .map(([name, position]) => ({
+      ...byName.get(name),
+      relativeX: position.x,
+      relativeY: position.y,
+    }))
+    .sort((left, right) => left.relativeY - right.relativeY || left.relativeX - right.relativeX);
 }
 
-function renderSyncDocumentMask(decodedDocument, bounds) {
-  const width = Math.max(64, Math.round((Math.abs(bounds.east - bounds.west) / 360) * WORLD_MASK_WIDTH * 4));
-  const height = Math.max(64, Math.round((Math.abs(bounds.north - bounds.south) / (WORLD_MASK_NORTH - WORLD_MASK_SOUTH)) * WORLD_MASK_HEIGHT * 4));
+function buildSyncEdgeScores(parsedDocuments) {
+  const occupiedByName = new Map(parsedDocuments.map((file) => [file.name, collectOccupiedSyncBlocks(file.decoded.rootIndex)]));
+  const scores = new Map();
+
+  for (const source of parsedDocuments) {
+    const links = [];
+
+    for (const target of parsedDocuments) {
+      if (source.name === target.name) {
+        continue;
+      }
+
+      const sourceBlocks = occupiedByName.get(source.name);
+      const targetBlocks = occupiedByName.get(target.name);
+
+      for (const direction of ["north", "south", "west", "east"]) {
+        links.push({
+          target: target.name,
+          direction,
+          score: scoreSyncEdgeDirection(sourceBlocks, targetBlocks, direction),
+        });
+      }
+    }
+
+    scores.set(source.name, links.filter((item) => item.score > 0).sort((left, right) => right.score - left.score));
+  }
+
+  return scores;
+}
+
+function collectOccupiedSyncBlocks(rootIndex) {
+  const occupied = {
+    north: new Set(),
+    south: new Set(),
+    west: new Set(),
+    east: new Set(),
+  };
+
+  for (let index = 0; index < rootIndex.length; index += 1) {
+    if (rootIndex[index] === 0) {
+      continue;
+    }
+
+    const x = index % SYNC_ROOT_GRID_SIZE;
+    const y = Math.floor(index / SYNC_ROOT_GRID_SIZE);
+
+    if (y === 0) {
+      occupied.north.add(x);
+    }
+    if (y === SYNC_ROOT_GRID_SIZE - 1) {
+      occupied.south.add(x);
+    }
+    if (x === 0) {
+      occupied.west.add(y);
+    }
+    if (x === SYNC_ROOT_GRID_SIZE - 1) {
+      occupied.east.add(y);
+    }
+  }
+
+  return occupied;
+}
+
+function scoreSyncEdgeDirection(sourceBlocks, targetBlocks, direction) {
+  const sourceSet = sourceBlocks[direction];
+  const targetSet = targetBlocks[oppositeDirection(direction)];
+  let score = 0;
+
+  for (const value of sourceSet) {
+    if (targetSet.has(value)) {
+      score += 1;
+    }
+  }
+
+  return score;
+}
+
+function oppositeDirection(direction) {
+  return (
+    {
+      north: "south",
+      south: "north",
+      west: "east",
+      east: "west",
+    }[direction] ?? "north"
+  );
+}
+
+function shiftPoint(point, direction) {
+  if (direction === "north") {
+    return { x: point.x, y: point.y - 1 };
+  }
+  if (direction === "south") {
+    return { x: point.x, y: point.y + 1 };
+  }
+  if (direction === "west") {
+    return { x: point.x - 1, y: point.y };
+  }
+  return { x: point.x + 1, y: point.y };
+}
+
+function scoreSyncPlacement(name, candidate, placed, edgeScores) {
+  const key = `${candidate.x},${candidate.y}`;
+  if ([...placed.values()].some((position) => `${position.x},${position.y}` === key)) {
+    return -Infinity;
+  }
+
+  let score = 0;
+  const links = edgeScores.get(name) ?? [];
+
+  for (const link of links) {
+    const targetPosition = placed.get(link.target);
+    if (!targetPosition) {
+      continue;
+    }
+
+    const expected = shiftPoint(candidate, link.direction);
+    if (expected.x === targetPosition.x && expected.y === targetPosition.y) {
+      score += link.score * 4;
+    } else if (Math.abs(expected.x - targetPosition.x) + Math.abs(expected.y - targetPosition.y) === 1) {
+      score += link.score;
+    }
+  }
+
+  score -= Math.abs(candidate.x) + Math.abs(candidate.y) * 0.75;
+  return score;
+}
+
+function normalizeRelativeLayout(placed) {
+  const points = [...placed.values()];
+  const minX = Math.min(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const normalized = new Map();
+
+  for (const [name, point] of placed.entries()) {
+    normalized.set(name, {
+      x: point.x - minX,
+      y: point.y - minY,
+    });
+  }
+
+  return normalized;
+}
+
+function assignSyncDocumentsToGrid(relativeLayout, anchor) {
+  return relativeLayout.map((file) => ({
+    ...file,
+    documentX: anchor.documentX + file.relativeX,
+    documentY: anchor.documentY + file.relativeY,
+  }));
+}
+
+function renderSyncDocumentMask(decodedDocument) {
+  const width = SYNC_DOCUMENT_CANVAS_SIZE;
+  const height = SYNC_DOCUMENT_CANVAS_SIZE;
   const sourceCanvas = document.createElement("canvas");
   sourceCanvas.width = width;
   sourceCanvas.height = height;
@@ -932,6 +1083,46 @@ function drawSyncDocumentToWorldMask(worldCtx, packedBitmap, bounds) {
   worldCtx.imageSmoothingEnabled = false;
   worldCtx.drawImage(packedBitmap.canvas, x, y, width, height);
   worldCtx.restore();
+}
+
+function fogDocumentToBounds(documentX, documentY) {
+  const startCellX = documentX * FOG_DOCUMENT_SIZE_CELLS;
+  const startCellY = documentY * FOG_DOCUMENT_SIZE_CELLS;
+  const endCellX = startCellX + FOG_DOCUMENT_SIZE_CELLS;
+  const endCellY = startCellY + FOG_DOCUMENT_SIZE_CELLS;
+  const northWest = fogCellToLatLng(startCellX, startCellY);
+  const southEast = fogCellToLatLng(endCellX, endCellY);
+
+  return {
+    west: northWest.lng,
+    east: southEast.lng,
+    north: northWest.lat,
+    south: southEast.lat,
+  };
+}
+
+function fogCellToLatLng(cellX, cellY) {
+  const scale = 256 * 2 ** FOG_WORLD_PIXEL_ZOOM;
+  const mapPointX = cellX * FOG_CELL_DIVISOR;
+  const mapPointY = cellY * FOG_CELL_DIVISOR;
+  const lng = (mapPointX / scale) * 360 - 180;
+  const mercatorY = mapPointY / scale;
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - 2 * mercatorY))) * 180) / Math.PI;
+
+  return { lat, lng };
+}
+
+function extendBounds(bounds, next) {
+  if (!bounds) {
+    return { ...next };
+  }
+
+  return {
+    west: Math.min(bounds.west, next.west),
+    east: Math.max(bounds.east, next.east),
+    north: Math.max(bounds.north, next.north),
+    south: Math.min(bounds.south, next.south),
+  };
 }
 
 function parseGpx(text) {
@@ -1089,7 +1280,10 @@ window.fogDebug = {
   latLngToFogGrid,
   latLngToFogMapPoint,
   fogMapPointToDocumentGrid,
+  fogDocumentToBounds,
   decodeSyncPageTree,
+  inferRelativeSyncLayout,
+  buildSyncEdgeScores,
   constants: {
     FOG_WORLD_PIXEL_ZOOM,
     FOG_CELL_DIVISOR,
@@ -1101,5 +1295,7 @@ window.fogDebug = {
     SYNC_ROOT_PAGE_COUNT,
     SYNC_ROOT_GRID_SIZE,
     SYNC_BLOCK_SIZE_BITS,
+    SYNC_MIN_DOCUMENTS,
+    TAIWAN_SYNC_ANCHOR,
   },
 };

@@ -33,6 +33,41 @@ Sync format findings
   - two payload pages together form a 64 x 64 explored block
 - This means Sync is much closer to explored-state block storage than GPS route storage.
 
+Important hypothesis update after user clue
+- The user stated the real track history is only in Taiwan:
+  - north-to-south Taiwan travel
+  - no Hualien / Taitung
+- This is incompatible with the current web rendering that spreads lines across the whole world.
+- Therefore the current world placement logic must be considered debug-only.
+- Strong new hypothesis:
+  - the 9 Sync files are not "8 continents + 1 statistics document"
+  - they may be changed exploration documents or sync transport documents from one merged storage system
+  - the current root/leaf decoder may still be reading real bit-level structure, but those bits are not yet proven to be direct world-space exploration masks
+  - current continent assignment should not be trusted as a near-final solution
+
+Taiwan-specific grid clue
+- Using the decoded ConvertMapPointToDocument math, Taiwan north-west corridor points land around:
+  - Taipei: doc (428,219), block (114,26)
+  - Keelung: doc (429,219), block (17,7)
+  - Taichung: doc (427,220), block (79,75)
+  - Tainan: doc (426,222), block (126,47)
+  - Kaohsiung: doc (427,222), block (12,121)
+- This means a Taiwan-only travel history can naturally span multiple documents.
+- So "9 sync files = 9 changed documents" is a plausible model.
+- That is much more reasonable than "9 sync files = 8 continents + 1 statistics".
+
+Adjacency clue from occupied block edges
+- Using only the root occupancy grid (128x128 blocks), several files show non-empty edges that plausibly connect to each other.
+- This is consistent with neighboring changed documents in a local region.
+- Example edge-band matches:
+  - 2095 east edge matches ff94 west edge strongly
+  - b707 east edge matches 9575 west edge strongly
+  - 890c south edge matches b707/e678 north edges
+  - 0235 north edge matches ff94 south edge
+- This is not enough to recover absolute world placement yet, but it supports:
+  - "these files are adjacent local documents"
+  - more than it supports "these files are whole continents"
+
 Why the current web result is "partly right"
 - The leaf block bitmap content is now being decoded from the root/leaf page tree.
 - That is why the imported Sync no longer looks like horizontal noise.
@@ -47,12 +82,16 @@ Current code status
   - drawSyncDocumentToWorldMask(...)
   - latLngToFogMapPoint(...)
   - fogMapPointToDocumentGrid(...)
-  - assignSyncDocumentsToContinents(...)
-- Current continent assignment is still heuristic, not native-verified.
-- The current heuristic is based on:
-  - refCount
-  - occupied block centroid
-  - occupied block bounding box
+  - fogDocumentToBounds(...)
+  - inferRelativeSyncLayout(...)
+  - buildSyncEdgeScores(...)
+- The continent assignment path has been removed from the main Sync import flow.
+- Current web rendering now does:
+  - decode each Sync file as one root/leaf page-tree document
+  - infer a relative local layout from directional edge overlap
+  - anchor that local layout near Taiwan docs around (426,219)
+  - render each document using real Fog document bounds
+- This is still heuristic, but it is materially more consistent with the Taiwan-only clue than the old continent model.
 
 Observed Sync file stats
 - 0235lljkowex: refs=12, bbox=(12,0)-(55,8), centroid=(47.8,3.6)
@@ -66,14 +105,8 @@ Observed Sync file stats
 - ff94lljoiloi: refs=1147, bbox=(0,0)-(75,127), centroid=(25.1,77.4)
 
 Most likely current interpretation
-- b707 is a strong candidate for W
-- 890c is a strong candidate for AN
-- 7e08 is a strong candidate for OC
-- 2095 may be AS if it represents mostly east-asia travel
-- e678 is a candidate for EU
-- a34 is a candidate for AF
-- ff94 / 9575 are candidates for NA / SA
-- 0235 is likely the extra/ignored document, but this is not proven
+- Previous continent guesses are now downgraded to a temporary debug heuristic.
+- Given the Taiwan-only clue, treating the 9 files as direct continent documents is probably wrong.
 
 Trailing page observations
 - Some files have extra full pages after the root + 2*ref payload area.
@@ -98,10 +131,18 @@ Useful reverse commands already used
 
 Next recommended steps
 1. Continue reverse around ExplorationDocument::GetExplorationStates and nearby functions in libapp-jni.so.
-2. Find where document/continent identity is read or persisted.
-3. Determine whether the trailing pages encode continent id, document id, or block ranges.
-4. Replace heuristic continent placement with native-verified mapping.
-5. Only after that consider improving projection/alignment at the world-mask rendering level.
+2. Find where sync documents are identified. Focus on documentIdentifier / documentLocation / documentTitle / documentVersion strings in the native binary.
+3. Determine whether the 9 files are:
+   - changed exploration documents
+   - sync database blocks
+   - segment-tree nodes
+   - or some other cloud-sync transport unit
+4. Treat current world rendering as a visualization aid only, not as geographically correct output.
+5. Only restore world-space placement after document identity is verified from native logic.
+
+Confirmed dead end
+- inflateSync / inflateSyncPoint in libapp-jni.so are zlib's own sync-recovery functions, not Fog of World's Sync-file parser.
+- Do not follow those as if they were application-level sync decoders.
 
 Verification already run
 - node --check app.js
@@ -109,4 +150,7 @@ Verification already run
 Important caution
 - The current web app is no longer decoding Sync as random data.
 - It is decoding a real root/leaf block structure.
-- If the rendered geography still looks misplaced, assume the remaining problem is document classification or metadata, not the basic leaf bitmap extraction.
+- If the rendered geography still looks misplaced, assume the remaining problem is:
+  - absolute document identity / anchor choice
+  - or the possibility that the payload pages need one more transform
+  - not the basic existence of a root/leaf block structure
