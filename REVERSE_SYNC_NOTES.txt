@@ -92,6 +92,11 @@ Current code status
   - anchor that local layout near Taiwan docs around (426,219)
   - render each document using real Fog document bounds
   - draw each document directly onto the Leaflet overlay instead of first flattening into a low-res world canvas
+- A persistent global placement offset now exists at block granularity:
+  - localStorage key: fog-of-world-web-sync-offset
+  - debug API: fogDebug.getSyncPlacementOffset() / fogDebug.setSyncPlacementOffset(blockX, blockY)
+  - current default guess: blockX = -56, blockY = 0
+- This is meant to correct the remaining "shape looks right but center is off" problem without changing the page-tree decode itself.
 - This is still heuristic, but it is materially more consistent with the Taiwan-only clue than the old continent model.
 
 Observed Sync file stats

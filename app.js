@@ -5,6 +5,7 @@ const defaultView = {
 };
 
 const STORAGE_KEY = "fog-of-world-web-state";
+const SYNC_OFFSET_STORAGE_KEY = "fog-of-world-web-sync-offset";
 const DEFAULT_REVEAL_RADIUS_METERS = 90;
 const IMPORT_REVEAL_RADIUS_METERS = 110;
 const LIVE_REVEAL_RADIUS_METERS = 95;
@@ -35,6 +36,10 @@ const TAIWAN_SYNC_ANCHOR = {
   documentX: 426,
   documentY: 219,
 };
+const DEFAULT_SYNC_PLACEMENT_OFFSET = {
+  blockX: -56,
+  blockY: 0,
+};
 
 const statusEl = document.querySelector("#status");
 const locateBtn = document.querySelector("#locateBtn");
@@ -52,6 +57,7 @@ let marker;
 let watchId = null;
 let liveRoute = null;
 let syncOverlayMask = null;
+let syncPlacementOffset = loadSyncPlacementOffset();
 
 const state = loadState();
 
@@ -629,7 +635,7 @@ async function importSyncDirectory(files) {
   let combinedBounds = null;
 
   for (const file of placedDocuments) {
-    const bounds = fogDocumentToBounds(file.documentX, file.documentY);
+    const bounds = fogDocumentToBounds(file.documentX, file.documentY, syncPlacementOffset);
     const packedBitmap = renderSyncDocumentMask(file.decoded);
 
     combinedBounds = extendBounds(combinedBounds, bounds);
@@ -1112,9 +1118,11 @@ function drawSyncDocumentToWorldMask(worldCtx, packedBitmap, bounds) {
   worldCtx.restore();
 }
 
-function fogDocumentToBounds(documentX, documentY) {
-  const startCellX = documentX * FOG_DOCUMENT_SIZE_CELLS;
-  const startCellY = documentY * FOG_DOCUMENT_SIZE_CELLS;
+function fogDocumentToBounds(documentX, documentY, offset = syncPlacementOffset) {
+  const offsetCellX = (offset?.blockX ?? 0) * FOG_BLOCK_SIZE_CELLS;
+  const offsetCellY = (offset?.blockY ?? 0) * FOG_BLOCK_SIZE_CELLS;
+  const startCellX = documentX * FOG_DOCUMENT_SIZE_CELLS + offsetCellX;
+  const startCellY = documentY * FOG_DOCUMENT_SIZE_CELLS + offsetCellY;
   const endCellX = startCellX + FOG_DOCUMENT_SIZE_CELLS;
   const endCellY = startCellY + FOG_DOCUMENT_SIZE_CELLS;
   const northWest = fogCellToLatLng(startCellX, startCellY);
@@ -1150,6 +1158,47 @@ function extendBounds(bounds, next) {
     north: Math.max(bounds.north, next.north),
     south: Math.min(bounds.south, next.south),
   };
+}
+
+function loadSyncPlacementOffset() {
+  try {
+    const raw = window.localStorage.getItem(SYNC_OFFSET_STORAGE_KEY);
+    if (!raw) {
+      return { ...DEFAULT_SYNC_PLACEMENT_OFFSET };
+    }
+
+    const parsed = JSON.parse(raw);
+    return {
+      blockX: Number.isFinite(parsed?.blockX) ? Math.trunc(parsed.blockX) : DEFAULT_SYNC_PLACEMENT_OFFSET.blockX,
+      blockY: Number.isFinite(parsed?.blockY) ? Math.trunc(parsed.blockY) : DEFAULT_SYNC_PLACEMENT_OFFSET.blockY,
+    };
+  } catch {
+    return { ...DEFAULT_SYNC_PLACEMENT_OFFSET };
+  }
+}
+
+function persistSyncPlacementOffset() {
+  window.localStorage.setItem(SYNC_OFFSET_STORAGE_KEY, JSON.stringify(syncPlacementOffset));
+}
+
+function refreshSyncOverlayBounds() {
+  if (!syncOverlayMask?.documents?.length) {
+    return null;
+  }
+
+  let bounds = null;
+
+  for (const document of syncOverlayMask.documents) {
+    document.bounds = fogDocumentToBounds(
+      document.documentGrid.x,
+      document.documentGrid.y,
+      syncPlacementOffset,
+    );
+    bounds = extendBounds(bounds, document.bounds);
+  }
+
+  redrawRoutesAndFog();
+  return bounds;
 }
 
 function parseGpx(text) {
@@ -1311,6 +1360,29 @@ window.fogDebug = {
   decodeSyncPageTree,
   inferRelativeSyncLayout,
   buildSyncEdgeScores,
+  getSyncPlacementOffset() {
+    return { ...syncPlacementOffset };
+  },
+  setSyncPlacementOffset(blockX, blockY) {
+    syncPlacementOffset = {
+      blockX: Math.trunc(blockX),
+      blockY: Math.trunc(blockY),
+    };
+    persistSyncPlacementOffset();
+    const bounds = refreshSyncOverlayBounds();
+
+    if (bounds && map) {
+      map.fitBounds(
+        [
+          [bounds.south, bounds.west],
+          [bounds.north, bounds.east],
+        ],
+        { padding: [24, 24], maxZoom: 9 },
+      );
+    }
+
+    return { ...syncPlacementOffset };
+  },
   constants: {
     FOG_WORLD_PIXEL_ZOOM,
     FOG_CELL_DIVISOR,
@@ -1324,5 +1396,6 @@ window.fogDebug = {
     SYNC_BLOCK_SIZE_BITS,
     SYNC_MIN_DOCUMENTS,
     TAIWAN_SYNC_ANCHOR,
+    DEFAULT_SYNC_PLACEMENT_OFFSET,
   },
 };
