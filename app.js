@@ -12,12 +12,63 @@ const MAX_IMPORT_SEGMENT_METERS = 10000;
 const MAX_ACCEPTABLE_ACCURACY_METERS = 100;
 const MIN_POINT_SPACING_METERS = 35;
 
+const WORLD_MASK_WIDTH = 2048;
+const WORLD_MASK_HEIGHT = 1024;
+const WORLD_MASK_NORTH = 85;
+const WORLD_MASK_SOUTH = -85;
+
+const SYNC_CONTINENT_ORDER = ["W", "AS", "AF", "NA", "SA", "AN", "EU", "OC"];
+const SYNC_CONTINENT_CONFIG = {
+  W: {
+    code: "W",
+    label: "海洋/世界",
+    bounds: { west: -180, east: 180, south: -85, north: 85 },
+  },
+  AS: {
+    code: "AS",
+    label: "亞洲",
+    bounds: { west: 25, east: 180, south: -10, north: 82 },
+  },
+  AF: {
+    code: "AF",
+    label: "非洲",
+    bounds: { west: -20, east: 55, south: -35, north: 38 },
+  },
+  NA: {
+    code: "NA",
+    label: "北美洲",
+    bounds: { west: -170, east: -15, south: 5, north: 84 },
+  },
+  SA: {
+    code: "SA",
+    label: "南美洲",
+    bounds: { west: -93, east: -28, south: -56, north: 14 },
+  },
+  AN: {
+    code: "AN",
+    label: "南極洲",
+    bounds: { west: -180, east: 180, south: -90, north: -58 },
+  },
+  EU: {
+    code: "EU",
+    label: "歐洲",
+    bounds: { west: -31, east: 60, south: 34, north: 72 },
+  },
+  OC: {
+    code: "OC",
+    label: "大洋洲",
+    bounds: { west: 110, east: 180, south: -50, north: 30 },
+  },
+};
+
 const statusEl = document.querySelector("#status");
 const locateBtn = document.querySelector("#locateBtn");
 const trackBtn = document.querySelector("#trackBtn");
 const importBtn = document.querySelector("#importBtn");
+const syncBtn = document.querySelector("#syncBtn");
 const clearBtn = document.querySelector("#clearBtn");
 const fileInput = document.querySelector("#fileInput");
+const syncInput = document.querySelector("#syncInput");
 
 const map = L.map("map", {
   zoomControl: true,
@@ -32,8 +83,9 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const routeLayer = L.layerGroup().addTo(map);
 
 const FogLayer = L.Layer.extend({
-  initialize(reveals = []) {
+  initialize(reveals = [], syncWorldMask = null) {
     this.reveals = reveals;
+    this.syncWorldMask = syncWorldMask;
   },
 
   onAdd(activeMap) {
@@ -54,6 +106,11 @@ const FogLayer = L.Layer.extend({
 
   setReveals(reveals) {
     this.reveals = reveals;
+    this._redraw();
+  },
+
+  setSyncWorldMask(syncWorldMask) {
+    this.syncWorldMask = syncWorldMask;
     this._redraw();
   },
 
@@ -79,6 +136,10 @@ const FogLayer = L.Layer.extend({
     ctx.fillStyle = "rgba(6, 10, 8, 0.9)";
     ctx.fillRect(0, 0, width, height);
     ctx.globalCompositeOperation = "destination-out";
+
+    if (this.syncWorldMask) {
+      this._punchSyncWorldMask(ctx);
+    }
 
     for (const reveal of this.reveals) {
       const center = L.latLng(reveal.lat, reveal.lng);
@@ -108,6 +169,34 @@ const FogLayer = L.Layer.extend({
     ctx.globalCompositeOperation = "source-over";
   },
 
+  _punchSyncWorldMask(ctx) {
+    const source = this.syncWorldMask;
+    const rowLatitudeSpan = (WORLD_MASK_NORTH - WORLD_MASK_SOUTH) / source.height;
+    const left = this._map.latLngToContainerPoint([0, -180]).x;
+    const right = this._map.latLngToContainerPoint([0, 180]).x;
+    const width = right - left;
+
+    if (!Number.isFinite(left) || !Number.isFinite(right) || width === 0) {
+      return;
+    }
+
+    // Render the stored world mask row-by-row so it follows Leaflet's Mercator Y transform.
+    for (let row = 0; row < source.height; row += 1) {
+      const latTop = WORLD_MASK_NORTH - row * rowLatitudeSpan;
+      const latBottom = latTop - rowLatitudeSpan;
+      const y1 = this._map.latLngToContainerPoint([latTop, 0]).y;
+      const y2 = this._map.latLngToContainerPoint([latBottom, 0]).y;
+      const top = Math.min(y1, y2);
+      const drawHeight = Math.max(Math.abs(y2 - y1), 1);
+
+      if (top > this._canvas.height || top + drawHeight < 0) {
+        continue;
+      }
+
+      ctx.drawImage(source, 0, row, source.width, 1, left, top, width, drawHeight);
+    }
+  },
+
   _metersToPixels(center, meters) {
     const bounds = center.toBounds(meters * 2);
     const northEastPoint = this._map.latLngToContainerPoint(bounds.getNorthEast());
@@ -117,7 +206,7 @@ const FogLayer = L.Layer.extend({
 });
 
 const state = loadState();
-const fogLayer = new FogLayer([]);
+const fogLayer = new FogLayer([], null);
 
 fogLayer.addTo(map);
 redrawRoutesAndFog();
@@ -125,8 +214,10 @@ redrawRoutesAndFog();
 let marker;
 let watchId = null;
 let liveRoute = null;
+let syncWorldMask = null;
+let syncSummary = null;
 
-setStatus("Fog of World 風格迷霧已啟用。可追蹤即時移動，或匯入 GPX/KML。");
+setStatus("Fog of World 風格迷霧已啟用。可追蹤即時移動、匯入 GPX/KML，或實驗性匯入 Sync。");
 updateTrackButton();
 
 locateBtn.addEventListener("click", () => {
@@ -142,7 +233,7 @@ locateBtn.addEventListener("click", () => {
       const point = [coords.latitude, coords.longitude];
       map.setView(point, 16);
       updateMarker(point, "你的目前位置");
-      appendPointToRoute(ensureLiveRoute(), point, LIVE_REVEAL_RADIUS_METERS);
+      appendPointToRoute(ensureLiveRoute(), point);
       setStatus(`已加入目前位置。精度約 ${Math.round(coords.accuracy)} 公尺。`);
     },
     (error) => {
@@ -171,16 +262,22 @@ importBtn.addEventListener("click", () => {
   fileInput.click();
 });
 
+syncBtn.addEventListener("click", () => {
+  syncInput.click();
+});
+
 clearBtn.addEventListener("click", () => {
   state.routes = [];
   liveRoute = null;
+  syncWorldMask = null;
+  syncSummary = null;
   persistState();
   redrawRoutesAndFog();
   if (marker) {
     map.removeLayer(marker);
     marker = null;
   }
-  setStatus("已清除網頁版紀錄。");
+  setStatus("已清除網頁版紀錄與本次 Sync 匯入結果。");
 });
 
 fileInput.addEventListener("change", async (event) => {
@@ -209,6 +306,35 @@ fileInput.addEventListener("change", async (event) => {
     setStatus(`匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
   } finally {
     fileInput.value = "";
+  }
+});
+
+syncInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files ?? []);
+  if (files.length === 0) {
+    return;
+  }
+
+  try {
+    setStatus(`正在分析 ${files.length} 個 Sync 檔案...`);
+    const result = await importSyncDirectory(files);
+    syncWorldMask = result.canvas;
+    syncSummary = result.summary;
+    redrawRoutesAndFog();
+    map.fitBounds(
+      [
+        [WORLD_MASK_SOUTH, -180],
+        [WORLD_MASK_NORTH, 180],
+      ],
+      { padding: [18, 18], maxZoom: 3 },
+    );
+
+    const labels = result.summary.documents.map((item) => item.label).join("、");
+    setStatus(`已實驗性還原 Sync：${labels}。此結果是依 APK 結構與 continent 尺寸推測，不是原生資料庫 1:1 解碼。`);
+  } catch (error) {
+    setStatus(`Sync 匯入失敗：${error instanceof Error ? error.message : "未知錯誤"}`);
+  } finally {
+    syncInput.value = "";
   }
 });
 
@@ -286,7 +412,7 @@ function ensureLiveRoute() {
   return route;
 }
 
-function appendPointToRoute(route, point, revealRadius) {
+function appendPointToRoute(route, point) {
   const previousPoint = route.points.at(-1);
   if (previousPoint) {
     const distance = distanceMeters(previousPoint, point);
@@ -324,6 +450,7 @@ function redrawRoutesAndFog() {
     reveals.push(...buildRevealSamples(route.points, resolveRouteRadius(route)));
   }
 
+  fogLayer.setSyncWorldMask(syncWorldMask);
   fogLayer.setReveals(reveals);
 }
 
@@ -417,6 +544,179 @@ function importTrackFile(filename, text) {
   }
 
   throw new Error("目前只支援 GPX 與 KML。");
+}
+
+async function importSyncDirectory(files) {
+  if (typeof window.pako?.inflate !== "function") {
+    throw new Error("缺少 zlib 解壓模組。");
+  }
+
+  const decodedFiles = [];
+
+  for (const file of files) {
+    if (file.name.startsWith(".")) {
+      continue;
+    }
+
+    const compressed = new Uint8Array(await file.arrayBuffer());
+    let decompressed;
+
+    try {
+      decompressed = window.pako.inflate(compressed);
+    } catch {
+      continue;
+    }
+
+    decodedFiles.push({
+      name: file.name,
+      bytes: decompressed,
+    });
+  }
+
+  if (decodedFiles.length < 9) {
+    throw new Error("可解壓的 Sync 檔案不足。預期至少 9 個 zlib 檔案。");
+  }
+
+  decodedFiles.sort((left, right) => left.bytes.length - right.bytes.length);
+  const statisticDocument = decodedFiles.shift();
+  const explorationDocuments = decodedFiles
+    .slice(0, SYNC_CONTINENT_ORDER.length)
+    .sort((left, right) => right.bytes.length - left.bytes.length);
+
+  if (explorationDocuments.length !== SYNC_CONTINENT_ORDER.length) {
+    throw new Error("目前只支援 8 份 exploration documents 的 Sync 目錄。");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = WORLD_MASK_WIDTH;
+  canvas.height = WORLD_MASK_HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("無法建立遮罩畫布。");
+  }
+
+  const summary = {
+    statisticDocument: statisticDocument?.name ?? "unknown",
+    documents: [],
+  };
+
+  for (let index = 0; index < SYNC_CONTINENT_ORDER.length; index += 1) {
+    const code = SYNC_CONTINENT_ORDER[index];
+    const config = SYNC_CONTINENT_CONFIG[code];
+    const file = explorationDocuments[index];
+    const packedBitmap = decodePackedSyncBitmap(file.bytes, config.bounds);
+
+    drawPackedBitmapToWorldMask(ctx, packedBitmap, config.bounds);
+
+    summary.documents.push({
+      code,
+      label: config.label,
+      filename: file.name,
+      bytes: file.bytes.length,
+      width: packedBitmap.width,
+      height: packedBitmap.height,
+      remainder: packedBitmap.remainder,
+    });
+  }
+
+  return { canvas, summary };
+}
+
+function decodePackedSyncBitmap(bytes, bounds) {
+  const totalBytes = bytes.length;
+  const aspect = estimateBoundsAspect(bounds);
+  const best = estimateBitmapDimensions(totalBytes, aspect);
+  const sourceCanvas = document.createElement("canvas");
+  sourceCanvas.width = best.width;
+  sourceCanvas.height = best.height;
+  const sourceCtx = sourceCanvas.getContext("2d");
+  const imageData = sourceCtx.createImageData(best.width, best.height);
+  const pixelData = imageData.data;
+  const usableBytes = best.rowBytes * best.height;
+
+  for (let offset = 0; offset < usableBytes; offset += 1) {
+    const value = bytes[offset];
+    if (value === 0) {
+      continue;
+    }
+
+    const y = Math.floor(offset / best.rowBytes);
+    const xByte = offset % best.rowBytes;
+
+    for (let bit = 0; bit < 8; bit += 1) {
+      if ((value & (0x80 >> bit)) === 0) {
+        continue;
+      }
+
+      const x = xByte * 8 + bit;
+      if (x >= best.width) {
+        continue;
+      }
+
+      const pixelIndex = (y * best.width + x) * 4;
+      pixelData[pixelIndex] = 255;
+      pixelData[pixelIndex + 1] = 255;
+      pixelData[pixelIndex + 2] = 255;
+      pixelData[pixelIndex + 3] = 255;
+    }
+  }
+
+  sourceCtx.putImageData(imageData, 0, 0);
+
+  return {
+    canvas: sourceCanvas,
+    width: best.width,
+    height: best.height,
+    remainder: best.remainder,
+  };
+}
+
+function estimateBitmapDimensions(totalBytes, aspect) {
+  const targetRowBytes = Math.max(1, Math.round(Math.sqrt((aspect * totalBytes) / 8)));
+  let best = null;
+
+  for (let rowBytes = Math.max(1, targetRowBytes - 256); rowBytes <= targetRowBytes + 256; rowBytes += 1) {
+    const height = Math.floor(totalBytes / rowBytes);
+    if (height <= 0) {
+      continue;
+    }
+
+    const remainder = totalBytes - rowBytes * height;
+    const width = rowBytes * 8;
+    const actualAspect = width / height;
+    const score = Math.abs(actualAspect - aspect) + remainder * 0.03;
+
+    if (!best || score < best.score) {
+      best = {
+        score,
+        rowBytes,
+        width,
+        height,
+        remainder,
+      };
+    }
+  }
+
+  return best;
+}
+
+function estimateBoundsAspect(bounds) {
+  const longitudeSpan = Math.max(Math.abs(bounds.east - bounds.west), 1);
+  const latitudeSpan = Math.max(Math.abs(bounds.north - bounds.south), 1);
+  return longitudeSpan / latitudeSpan;
+}
+
+function drawPackedBitmapToWorldMask(worldCtx, packedBitmap, bounds) {
+  const x = ((bounds.west + 180) / 360) * WORLD_MASK_WIDTH;
+  const y = ((WORLD_MASK_NORTH - bounds.north) / (WORLD_MASK_NORTH - WORLD_MASK_SOUTH)) * WORLD_MASK_HEIGHT;
+  const width = ((bounds.east - bounds.west) / 360) * WORLD_MASK_WIDTH;
+  const height = ((bounds.north - bounds.south) / (WORLD_MASK_NORTH - WORLD_MASK_SOUTH)) * WORLD_MASK_HEIGHT;
+
+  worldCtx.save();
+  worldCtx.imageSmoothingEnabled = false;
+  worldCtx.drawImage(packedBitmap.canvas, x, y, width, height);
+  worldCtx.restore();
 }
 
 function parseGpx(text) {

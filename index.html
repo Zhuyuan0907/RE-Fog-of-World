@@ -21,17 +21,20 @@
       </div>
       <div class="button-row">
         <button id="importBtn" type="button">匯入 GPX/KML</button>
+        <button id="syncBtn" type="button">匯入 Sync</button>
         <button id="clearBtn" type="button">清除紀錄</button>
       </div>
       <p id="status" class="status">地圖初始化中...</p>
     </div>
     <input id="fileInput" type="file" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" hidden />
+    <input id="syncInput" type="file" webkitdirectory directory multiple hidden />
 
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
+    <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" crossorigin="anonymous"></script>
     <script src="./app.js"></script>
   </body>
 </html>
