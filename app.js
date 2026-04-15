@@ -598,8 +598,7 @@ async function importSyncDirectory(files) {
     throw new Error("目前只支援 8 份 exploration documents 的 Sync 目錄。");
   }
 
-  const explorationDocuments = parsedDocuments.slice(0, SYNC_CONTINENT_ORDER.length);
-  const ignoredDocuments = parsedDocuments.slice(SYNC_CONTINENT_ORDER.length);
+  const { explorationDocuments, ignoredDocuments } = assignSyncDocumentsToContinents(parsedDocuments);
 
   const canvas = document.createElement("canvas");
   canvas.width = WORLD_MASK_WIDTH;
@@ -672,6 +671,8 @@ function decodeSyncPageTree(bytes) {
     maxX: 0,
     maxY: 0,
   };
+  let blockSumX = 0;
+  let blockSumY = 0;
 
   for (let valueIndex = 0; valueIndex < rootIndex.length; valueIndex += 1) {
     const byteOffset = valueIndex * 2;
@@ -685,6 +686,8 @@ function decodeSyncPageTree(bytes) {
     references.add(reference);
     const blockX = valueIndex % SYNC_ROOT_GRID_SIZE;
     const blockY = Math.floor(valueIndex / SYNC_ROOT_GRID_SIZE);
+    blockSumX += blockX;
+    blockSumY += blockY;
     blockBounds.minX = Math.min(blockBounds.minX, blockX);
     blockBounds.minY = Math.min(blockBounds.minY, blockY);
     blockBounds.maxX = Math.max(blockBounds.maxX, blockX);
@@ -701,10 +704,85 @@ function decodeSyncPageTree(bytes) {
     refCount,
     occupiedBlocks,
     blockBounds: refCount === 0 ? null : blockBounds,
+    blockCentroid:
+      occupiedBlocks === 0
+        ? null
+        : {
+            x: blockSumX / occupiedBlocks,
+            y: blockSumY / occupiedBlocks,
+          },
     trailingPages,
     remainderBytes: bytes.length - fullPageCount * SYNC_PAGE_SIZE_BYTES,
     pageBytes: bytes.subarray(0, fullPageCount * SYNC_PAGE_SIZE_BYTES),
   };
+}
+
+function assignSyncDocumentsToContinents(parsedDocuments) {
+  const pool = [...parsedDocuments];
+  const assignments = new Map();
+
+  const take = (code, predicate) => {
+    const index = pool.findIndex(predicate);
+    if (index === -1) {
+      return;
+    }
+
+    assignments.set(code, pool.splice(index, 1)[0]);
+  };
+
+  take("W", (file) => file.decoded.refCount === Math.max(...pool.map((item) => item.decoded.refCount)));
+  take(
+    "AN",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.y === Math.max(...pool.map((item) => item.decoded.blockCentroid?.y ?? -Infinity)),
+  );
+  take(
+    "OC",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.x > 80 &&
+      file.decoded.blockCentroid.y > 70,
+  );
+  take(
+    "AS",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.x > 100 &&
+      file.decoded.blockCentroid.y < 80,
+  );
+  take(
+    "SA",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.x < 40 &&
+      file.decoded.blockCentroid.y > 45 &&
+      file.decoded.refCount < 700,
+  );
+  take(
+    "NA",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.x < 45,
+  );
+  take(
+    "EU",
+    (file) =>
+      file.decoded.blockCentroid &&
+      file.decoded.blockCentroid.x > 55 &&
+      file.decoded.blockCentroid.x < 95 &&
+      file.decoded.refCount < 1000,
+  );
+  take("AF", () => pool.length > 0);
+
+  const explorationDocuments = SYNC_CONTINENT_ORDER.map((code) => assignments.get(code)).filter(Boolean);
+  const ignoredDocuments = pool;
+
+  if (explorationDocuments.length !== SYNC_CONTINENT_ORDER.length) {
+    throw new Error("Sync document 分類不足，尚未能完整對應到 8 個 continent。");
+  }
+
+  return { explorationDocuments, ignoredDocuments };
 }
 
 function renderSyncDocumentMask(decodedDocument, bounds) {

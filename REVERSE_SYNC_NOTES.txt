@@ -1,0 +1,112 @@
+Fog of World reverse notes
+
+Workspace
+- Project: /Users/zhuyuanjiang/Desktop/RE-Fog-of-World
+- Decompiled APK root: /Users/zhuyuanjiang/Downloads/fogofworld
+- Sync backup folder: /Users/zhuyuanjiang/Downloads/Sync
+- Native library used for reverse work: /Users/zhuyuanjiang/Desktop/RE-Fog-of-World/.debug-sync/libapp-jni.so
+
+What is already established
+- Android Java/smali layer is not the core exploration engine. The core lives in libapp-jni.so.
+- Native symbols clearly include:
+  - fogofworld::ExplorationDocument
+  - fogofworld::StatisticDocument
+  - ExplorationDocument::GetExplorationStates(...)
+- ConvertMapPointToDocument was disassembled and the grid math is now known:
+  - internal world pixel space is effectively Web Mercator around z20
+  - divide by 64 => exploration cell grid
+  - document size = 8192 x 8192 cells
+  - block size = 64 x 64 cells
+  - blocks per document = 128 x 128
+  - blockId = blockX + blockY * 128
+  - documentId = documentX + documentY * 512
+
+Sync format findings
+- The 9 files in /Users/zhuyuanjiang/Downloads/Sync are zlib-compressed binary files.
+- After decompression, they are not raw polylines and not a single row-major bitmap.
+- Current highest-confidence structure:
+  - first 128 pages are the root index
+  - page size = 256 bytes
+  - root index = 128 x 128 uint16 references
+  - each non-zero reference points to 2 payload pages
+  - each payload page decodes as 64 x 32 bits
+  - two payload pages together form a 64 x 64 explored block
+- This means Sync is much closer to explored-state block storage than GPS route storage.
+
+Why the current web result is "partly right"
+- The leaf block bitmap content is now being decoded from the root/leaf page tree.
+- That is why the imported Sync no longer looks like horizontal noise.
+- The main remaining error is document classification / placement:
+  - which decompressed file corresponds to W / AS / AF / NA / SA / AN / EU / OC
+  - and whether any trailing pages contain metadata to make that mapping exact
+
+Current code status
+- app.js now contains:
+  - decodeSyncPageTree(...)
+  - renderSyncDocumentMask(...)
+  - drawSyncDocumentToWorldMask(...)
+  - latLngToFogMapPoint(...)
+  - fogMapPointToDocumentGrid(...)
+  - assignSyncDocumentsToContinents(...)
+- Current continent assignment is still heuristic, not native-verified.
+- The current heuristic is based on:
+  - refCount
+  - occupied block centroid
+  - occupied block bounding box
+
+Observed Sync file stats
+- 0235lljkowex: refs=12, bbox=(12,0)-(55,8), centroid=(47.8,3.6)
+- 2095lljoiooe: refs=89, bbox=(118,11)-(127,61), centroid=(124.2,44.5)
+- 7e08llhsssww: refs=259, bbox=(83,75)-(127,127), centroid=(110.0,106.7)
+- 890cllhojjdd: refs=53, bbox=(92,114)-(108,127), centroid=(98.9,120.7)
+- 9575llhsstwn: refs=348, bbox=(0,2)-(35,106), centroid=(18.0,57.6)
+- a34bllwstino: refs=962, bbox=(2,0)-(104,127), centroid=(44.6,64.7)
+- b707llhsskwk: refs=1422, bbox=(0,0)-(127,94), centroid=(70.6,37.7)
+- e678llwoktkn: refs=894, bbox=(46,0)-(107,127), centroid=(73.5,65.6)
+- ff94lljoiloi: refs=1147, bbox=(0,0)-(75,127), centroid=(25.1,77.4)
+
+Most likely current interpretation
+- b707 is a strong candidate for W
+- 890c is a strong candidate for AN
+- 7e08 is a strong candidate for OC
+- 2095 may be AS if it represents mostly east-asia travel
+- e678 is a candidate for EU
+- a34 is a candidate for AF
+- ff94 / 9575 are candidates for NA / SA
+- 0235 is likely the extra/ignored document, but this is not proven
+
+Trailing page observations
+- Some files have extra full pages after the root + 2*ref payload area.
+- delta = pageCount - 128 - 2*refCount:
+  - 0235 => 0
+  - 2095 => 1
+  - 7e08 => 3
+  - 890c => 0
+  - 9575 => 4
+  - a34 => 11
+  - b707 => 16
+  - e678 => 10
+  - ff94 => 13
+- Most of those trailing pages begin with a lot of zeros.
+- They likely contain metadata or secondary index material, but exact meaning is still unresolved.
+
+Useful reverse commands already used
+- objdump -d --start-address=0x273cf64 --stop-address=0x273d020 .debug-sync/libapp-jni.so
+- objdump -d --start-address=0x273ffb0 --stop-address=0x2740040 .debug-sync/libapp-jni.so
+- strings .debug-sync/libapp-jni.so | rg "ExplorationDocument|StatisticDocument|continent|block|document|MapPoint"
+- unzip -l /Users/zhuyuanjiang/Downloads/fogofworld/decompiled/base/assets/misc/gccb
+
+Next recommended steps
+1. Continue reverse around ExplorationDocument::GetExplorationStates and nearby functions in libapp-jni.so.
+2. Find where document/continent identity is read or persisted.
+3. Determine whether the trailing pages encode continent id, document id, or block ranges.
+4. Replace heuristic continent placement with native-verified mapping.
+5. Only after that consider improving projection/alignment at the world-mask rendering level.
+
+Verification already run
+- node --check app.js
+
+Important caution
+- The current web app is no longer decoding Sync as random data.
+- It is decoding a real root/leaf block structure.
+- If the rendered geography still looks misplaced, assume the remaining problem is document classification or metadata, not the basic leaf bitmap extraction.
